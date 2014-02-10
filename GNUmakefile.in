@@ -1,0 +1,121 @@
+### @configure_input@
+
+AR = ar
+CC = @CC@
+CXX = @CXX@
+
+DEPSDIR := .deps
+DEPCFLAGS = -MD -MF $(DEPSDIR)/$*.d -MP
+top_srcdir = @top_srcdir@
+builddir = .
+
+INCLUDES = -include config.h -I$(top_srcdir) -I$(DEPSDIR) -I$(top_srcdir)/tamer
+CPPFLAGS = $(INCLUDES) @CPPFLAGS@
+CXXFLAGS = -W -Wall @CXXFLAGS@
+
+LIBS = $(LIBTAMER) `$(TAMER) -l` @LIBS@ -lpthread -lm
+LDFLAGS = @LDFLAGS@
+
+TAMEDDIR = $(DEPSDIR)
+TAMER_COMMIT = ea5f47c4616fd00a1205afa77ed3901355e05092
+
+CXXCOMPILE = $(CXX) $(DEFS) $(CPPFLAGS) $(CXXFLAGS)
+CXXLINK = $(CXX) $(CXXFLAGS)
+
+TAMER = tamer/compiler/tamer
+TAMERFLAGS = @TAMERFLAGS@
+LIBTAMER = tamer/tamer/.libs/libtamer.a
+
+
+all: mprpc msgpacktest jsontest
+
+%.o: %.c config.h $(DEPSDIR)/stamp
+	$(CXXCOMPILE) $(DEPCFLAGS) -include config.h -c -o $@ $<
+
+%.o: %.cc config.h $(DEPSDIR)/stamp
+	$(CXXCOMPILE) $(DEPCFLAGS) -include config.h -c -o $@ $<
+
+%.o: $(TAMEDDIR)/%.cc config.h $(DEPSDIR)/stamp
+	$(CXXCOMPILE) $(DEPCFLAGS) -include config.h -c -o $@ $<
+
+$(TAMEDDIR)/%.cc: %.tcc config.h $(DEPSDIR)/stamp $(TAMER)
+	$(TAMER) $(TAMERFLAGS) -F $(DEPSDIR)/$*.cc.d -o $@ $<
+
+$(TAMEDDIR)/%.hh: %.thh config.h $(DEPSDIR)/stamp $(TAMER)
+	$(TAMER) $(TAMERFLAGS) -F $(DEPSDIR)/$*.hh.d -o $@ $<
+
+%.S: %.o
+	objdump -S $< > $@
+
+libjson.a: json.o string.o straccum.o str.o msgpack.o \
+	clp.o kvrandom.o compiler.o kvthread.o
+	@/bin/rm -f $@
+	$(AR) cru $@ $^
+
+mprpc: mprpc.o mpfd.o string.o straccum.o json.o compiler.o msgpack.o clp.o $(LIBTAMER)
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+
+mtd: mtd.o log.o checkpoint.o file.o misc.o $(KVTREES) \
+	kvio.o libjson.a
+	$(CXX) $(CFLAGS) -o $@ $^ $(MEMMGR) $(LDFLAGS) $(LIBS)
+
+mtclient: mtclient.o misc.o testrunner.o kvio.o libjson.a
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+
+mttest: mttest.o misc.o checkpoint.o $(KVTREES) testrunner.o \
+	kvio.o libjson.a
+	$(CXX) $(CFLAGS) -o $@ $^ $(MEMMGR) $(LDFLAGS) $(LIBS)
+
+test_atomics: test_atomics.o string.o straccum.o kvrandom.o \
+	json.o compiler.o kvio.o
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+
+jsontest: jsontest.o string.o straccum.o json.o compiler.o
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+
+msgpacktest: msgpacktest.o string.o straccum.o json.o compiler.o msgpack.o
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
+
+config.h: stamp-h
+
+GNUmakefile: GNUmakefile.in config.status
+	CONFIG_FILES=$@ CONFIG_HEADERS= $(SHELL) ./config.status
+
+$(top_srcdir)/configure $(top_srcdir)/config.h.in: $(top_srcdir)/configure.ac
+	cd $(top_srcdir) && autoreconf -i && touch config.h.in
+
+config.status: $(top_srcdir)/configure
+	$(top_srcdir)/configure @ac_configure_args@
+
+stamp-h: $(top_srcdir)/config.h.in config.status
+	CONFIG_FILES= $(SHELL) ./config.status
+	echo > stamp-h
+
+$(DEPSDIR)/stamp:
+	mkdir -p $(dir $@)
+	touch $@
+
+tamer/compiler/tamer $(LIBTAMER): tamer-update
+
+tamer-update:
+	@cd ./`git rev-parse --show-cdup` && cur=`git submodule status tamer | head -c 41 | tail -c +2` && if test "$$cur" != $(TAMER_COMMIT) && test -z `cd tamer; git rev-list -n1 $(TAMER_COMMIT)..HEAD 2>/dev/null`; then (echo Updating tamer... 1>&2; cd tamer; git checkout -f master >/dev/null; git pull; cd ..; git submodule update tamer); fi
+	cd tamer && $(MAKE) --no-print-directory compiler tamer
+
+clean:
+	rm -f mtd mtclient mttest test_string test_atomics *.o libjson.a
+	rm -rf .deps
+
+# tamer dependencies
+mpfd.o: $(TAMEDDIR)/mpfd.hh $(TAMEDDIR)/mpfd.cc
+mprpc.o: $(TAMEDDIR)/mprpc.cc $(TAMEDDIR)/mpfd.hh
+
+DEPFILES := $(wildcard $(DEPSDIR)/*.d)
+ifneq ($(DEPFILES),)
+include $(DEPFILES)
+endif
+
+always:
+	@:
+
+.PHONY: all clean always tamer-update
+.PRECIOUS: $(DEPSDIR)/%.cc $(DEPSDIR)/%.hh
