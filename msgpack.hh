@@ -600,5 +600,21 @@ inline parser& parser::operator>>(Json& j)  {
     return *this;
 }
 
+inline Json parse(const char* first, const char* last) {
+    streaming_parser sp;
+    first = sp.consume(first, last, String());
+    if (sp.success())
+        return sp.result();
+    return Json();
+}
+
+inline Json parse(const String& str) {
+    streaming_parser sp;
+    sp.consume(str.begin(), str.end(), str);
+    if (sp.success())
+        return sp.result();
+    return Json();
+}
+
 } // namespace msgpack
 #endif

@@ -57,9 +57,7 @@ static void test(const char* file, int line,
 
 #define TEST(...) test(__FILE__, __LINE__, ## __VA_ARGS__)
 
-int main(int argc, char** argv) {
-    (void) argc, (void) argv;
-
+void check_correctness() {
     TEST("\0", 1, 1, "0");
     TEST("\xFF  ", 3, 1, "-1");
     TEST("\xC0  ", 3, 1, "null");
@@ -94,4 +92,84 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "All tests pass!\n";
+}
+
+Json __attribute__((noinline)) parse_json(const char* first, const char* last) {
+    return Json::parse(first, last);
+}
+
+Json __attribute__((noinline)) parse_json(const String& str) {
+    return Json::parse(str);
+}
+
+static const char sample_json[] = "{\"name\": \"Deborah Estrin\", \"email\": \"estrin@usc.edu\", \"affiliation\": \"University of Southern California\", \"roles\": [\"pc\"]}";
+
+static const char sample_msgpack[] = "\204\244name\256Deborah Estrin\245email\256estrin@usc.edu\253affiliation\331!University of Southern California\245roles\221\242pc";
+
+static int parse_json_loop_size = 10000000;
+
+void parse_json_loop_1() {
+    int total_size = 0;
+    const char* sample_json_end = sample_json + strlen(sample_json);
+    for (int i = 0; i != parse_json_loop_size; ++i) {
+        Json j = Json::parse(sample_json, sample_json_end);
+        total_size += j.size();
+    }
+    assert(total_size == 4 * parse_json_loop_size);
+}
+
+void parse_json_loop_2() {
+    int total_size = 0;
+    const char* sample_json_end = sample_json + strlen(sample_json);
+    for (int i = 0; i != parse_json_loop_size; ++i) {
+        Json j = Json::parse(String(sample_json, sample_json_end));
+        total_size += j.size();
+    }
+    assert(total_size == 4 * parse_json_loop_size);
+}
+
+void parse_json_loop_3() {
+    int total_size = 0;
+    String sample_json_str(sample_json);
+    for (int i = 0; i != parse_json_loop_size; ++i) {
+        Json j = Json::parse(sample_json_str);
+        total_size += j.size();
+    }
+    assert(total_size == 4 * parse_json_loop_size);
+}
+
+void parse_msgpack_loop_1() {
+    int total_size = 0;
+    const char* sample_msgpack_end = sample_msgpack + strlen(sample_msgpack);
+    for (int i = 0; i != parse_json_loop_size; ++i) {
+        Json j = msgpack::parse(sample_msgpack, sample_msgpack_end);
+        total_size += j.size();
+    }
+    assert(total_size == 4 * parse_json_loop_size);
+}
+
+void parse_msgpack_loop_2() {
+    int total_size = 0;
+    const char* sample_msgpack_end = sample_msgpack + strlen(sample_msgpack);
+    for (int i = 0; i != parse_json_loop_size; ++i) {
+        Json j = msgpack::parse(String(sample_msgpack, sample_msgpack_end));
+        total_size += j.size();
+    }
+    assert(total_size == 4 * parse_json_loop_size);
+}
+
+void parse_msgpack_loop_3() {
+    int total_size = 0;
+    String sample_msgpack_str(sample_msgpack);
+    for (int i = 0; i != parse_json_loop_size; ++i) {
+        Json j = msgpack::parse(sample_msgpack_str);
+        total_size += j.size();
+    }
+    assert(total_size == 4 * parse_json_loop_size);
+}
+
+int main(int argc, char** argv) {
+    (void) argc, (void) argv;
+
+    check_correctness();
 }
