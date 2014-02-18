@@ -82,6 +82,8 @@ class msgpack_fd {
     inline void check_coroutines();
     tamed void writer_coroutine();
     tamed void reader_coroutine();
+    void clear_write();
+    void clear_read();
 
     msgpack_fd(const msgpack_fd&) = delete;
     msgpack_fd& operator=(const msgpack_fd&) = delete;

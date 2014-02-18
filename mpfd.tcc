@@ -29,11 +29,31 @@ void msgpack_fd::initialize(tamer::fd wfd, tamer::fd rfd) {
     reader_coroutine();
 }
 
+void msgpack_fd::clear_write() {
+    for (auto& e : flushelem_)
+        e.e.trigger((ssize_t) (wrpos_ - e.wpos) >= 0);
+    flushelem_.clear();
+    for (auto& e : rdreplywait_)
+        if ((ssize_t) (wrpos_ - e.wpos) < 0)
+            e.e.trigger(Json());
+}
+
+void msgpack_fd::clear_read() {
+    for (auto& e : rdreqwait_)
+        e.unblock();
+    rdreqwait_.clear();
+    for (auto& re : rdreplywait_)
+        re.e.unblock();
+    rdreplywait_.clear();
+}
+
 msgpack_fd::~msgpack_fd() {
     wrkill_();
     rdkill_();
     wrwake_();
     rdwake_();
+    clear_write();
+    clear_read();
 }
 
 void msgpack_fd::write(const Json& j) {
@@ -114,6 +134,11 @@ bool msgpack_fd::read_one_message() {
 }
 
 tamed void msgpack_fd::reader_coroutine() {
+    // NB The msgpack_fd::coroutines may outlive the msgpack_fd itself. They
+    // are programmed to survive the deletion of the msgpack_fd by checking
+    // whether `kill` is triggered. If `kill` has been triggered, the
+    // msgpack_fd is dead.
+
     tvars {
         tamer::event<> kill;
         tamer::rendezvous<> rendez;
@@ -129,6 +154,9 @@ tamed void msgpack_fd::reader_coroutine() {
         else if (rdreqwait_.empty() && rdreplywait_.empty())
             twait { rdwake_ = make_event(); }
 
+        if (!kill)
+            break;
+
         rdquota_ = rdbatch;
         while (rdquota_ && (!rdreqwait_.empty() || !rdreplywait_.empty())
                && read_one_message())
@@ -137,13 +165,10 @@ tamed void msgpack_fd::reader_coroutine() {
             pacer_();
     }
 
-    for (auto& e : rdreqwait_)
-        e.unblock();
-    rdreqwait_.clear();
-    for (auto& re : rdreplywait_)
-        re.e.unblock();
-    rdreplywait_.clear();
-    kill();                     // avoid leak of active event
+    if (kill) {
+        clear_read();
+        kill();                 // avoid leak of active event
+    }
 }
 
 bool msgpack_fd::dispatch(bool exit_on_request) {
@@ -245,6 +270,11 @@ void msgpack_fd::write_once() {
 }
 
 tamed void msgpack_fd::writer_coroutine() {
+    // NB The msgpack_fd::coroutines may outlive the msgpack_fd itself. They
+    // are programmed to survive the deletion of the msgpack_fd by checking
+    // whether `kill` is triggered. If `kill` has been triggered, the
+    // msgpack_fd is dead.
+
     tvars {
         tamer::event<> kill;
         tamer::rendezvous<> rendez;
@@ -257,16 +287,14 @@ tamed void msgpack_fd::writer_coroutine() {
             twait { wrwake_ = make_event(); }
         else if (wrblocked_) {
             twait { tamer::at_fd_write(wfd_.value(), make_event()); }
-            wrblocked_ = false;
+            if (kill)
+                wrblocked_ = false;
         } else
             write_once();
     }
 
-    for (auto& e : flushelem_)
-        e.e.trigger((ssize_t) (wrpos_ - e.wpos) >= 0);
-    flushelem_.clear();
-    for (auto& e : rdreplywait_)
-        if ((ssize_t) (wrpos_ - e.wpos) < 0)
-            e.e.trigger(Json());
-    kill();
+    if (kill) {
+        clear_write();
+        kill();
+    }
 }
