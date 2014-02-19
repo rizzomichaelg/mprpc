@@ -9,10 +9,12 @@
 void msgpack_fd::construct() {
     wrpos_ = 0;
     wrsize_ = 0;
+    wrtotal_ = 0;
     wrblocked_ = false;
     rdbuf_ = String::make_uninitialized(rdcap);
     rdpos_ = 0;
     rdlen_ = 0;
+    rdtotal_ = 0;
     rdquota_ = rdbatch;
     rdreply_seq_ = 0;
 
@@ -67,6 +69,7 @@ void msgpack_fd::write(const Json& j) {
     int old_len = w->sa.length();
     msgpack::unparse(w->sa, j);
     wrsize_ += w->sa.length() - old_len;
+    wrtotal_ += w->sa.length() - old_len;
     wrwake_();
     if (!wrblocked_ && wrelem_.front().sa.length() >= wrlowat)
         write_once();
@@ -107,9 +110,10 @@ bool msgpack_fd::read_one_message() {
                              const_cast<char*>(rdbuf_.data()) + rdpos_,
                              rdcap - rdpos_);
 
-        if (amt != 0 && amt != (ssize_t) -1)
+        if (amt != 0 && amt != (ssize_t) -1) {
             rdlen_ += amt;
-        else {
+            rdtotal_ += amt;
+        } else {
             if (amt == 0)
                 rfd_.close();
             else if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)

@@ -27,6 +27,8 @@ class msgpack_fd {
     template <typename R>
     inline void pace(tamer::preevent<R> done);
 
+    inline size_t sent_bytes() const;
+    inline size_t recv_bytes() const;
     inline Json status() const;
 
   private:
@@ -45,6 +47,7 @@ class msgpack_fd {
     std::deque<wrelem> wrelem_;
     size_t wrpos_;
     size_t wrsize_;
+    size_t wrtotal_;
     bool wrblocked_;
     std::deque<flushelem> flushelem_;
     tamer::event<> wrwake_;
@@ -54,6 +57,7 @@ class msgpack_fd {
     String rdbuf_;
     size_t rdpos_;
     size_t rdlen_;
+    size_t rdtotal_;
     int rdquota_;
     msgpack::streaming_parser rdparser_;
 
@@ -154,6 +158,14 @@ inline void msgpack_fd::pace(tamer::preevent<R> done) {
         pacer_ = tamer::distribute(std::move(pacer_), std::move(done));
     else
         done();
+}
+
+inline size_t msgpack_fd::sent_bytes() const {
+    return wrtotal_;
+}
+
+inline size_t msgpack_fd::recv_bytes() const {
+    return rdtotal_;
 }
 
 inline Json msgpack_fd::status() const {
