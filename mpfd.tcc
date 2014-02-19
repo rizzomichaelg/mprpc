@@ -9,6 +9,7 @@
 void msgpack_fd::construct() {
     wrpos_ = 0;
     wrsize_ = 0;
+    wrlowat_ = 1 << 12;
     wrtotal_ = 0;
     wrblocked_ = false;
     rdbuf_ = String::make_uninitialized(rdcap);
@@ -60,6 +61,8 @@ msgpack_fd::~msgpack_fd() {
 
 void msgpack_fd::write(const Json& j) {
     wrelem* w = &wrelem_.back();
+    if (wrsize_ >= wrlowat_ && !wrblocked_)
+        write_once();
     if (w->sa.length() >= wrhiwat) {
         wrelem_.push_back(wrelem());
         w = &wrelem_.back();
@@ -70,9 +73,9 @@ void msgpack_fd::write(const Json& j) {
     msgpack::unparse(w->sa, j);
     wrsize_ += w->sa.length() - old_len;
     wrtotal_ += w->sa.length() - old_len;
-    wrwake_();
-    if (!wrblocked_ && wrelem_.front().sa.length() >= wrlowat)
-        write_once();
+    if (wrwake_)
+        tamer::at_asap(std::move(wrwake_));
+    assert(!wrwake_);
 }
 
 void msgpack_fd::flush(tamer::event<bool> done) {

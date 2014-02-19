@@ -33,6 +33,9 @@ class msgpack_fd {
     template <typename R>
     inline void pace(tamer::preevent<R> done);
 
+    inline size_t wrlowat() const;
+    inline void set_wrlowat(size_t wrlowat);
+
     inline size_t sent_bytes() const;
     inline size_t recv_bytes() const;
     inline Json status() const;
@@ -41,7 +44,7 @@ class msgpack_fd {
     tamer::fd wfd_;
     tamer::fd rfd_;
 
-    enum { wrcap = 1 << 17, wrlowat = 1 << 12, wrhiwat = wrcap - 2048 };
+    enum { wrcap = 1 << 17, wrhiwat = wrcap - 2048 };
     struct wrelem {
         StringAccum sa;
         int pos;
@@ -53,6 +56,7 @@ class msgpack_fd {
     std::deque<wrelem> wrelem_;
     size_t wrpos_;
     size_t wrsize_;
+    size_t wrlowat_;
     size_t wrtotal_;
     bool wrblocked_;
     std::deque<flushelem> flushelem_;
@@ -176,6 +180,14 @@ inline void msgpack_fd::pace(tamer::preevent<R> done) {
         pacer_ = tamer::distribute(std::move(pacer_), std::move(done));
     else
         done();
+}
+
+inline size_t msgpack_fd::wrlowat() const {
+    return wrlowat_;
+}
+
+inline void msgpack_fd::set_wrlowat(size_t wrlowat) {
+    wrlowat_ = wrlowat;
 }
 
 inline size_t msgpack_fd::sent_bytes() const {
