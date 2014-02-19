@@ -10,6 +10,8 @@
 
 class msgpack_fd {
   public:
+    typedef bool (msgpack_fd::*unspecified_bool_type)() const;
+
     inline msgpack_fd();
     explicit inline msgpack_fd(tamer::fd fd);
     inline msgpack_fd(tamer::fd rfd, tamer::fd wfd);
@@ -17,6 +19,10 @@ class msgpack_fd {
 
     inline void initialize(tamer::fd fd);
     void initialize(tamer::fd rfd, tamer::fd wfd);
+
+    inline bool valid() const;
+    inline operator unspecified_bool_type() const;
+    inline bool operator!() const;
 
     void write(const Json& j);
     template <typename R>
@@ -110,6 +116,18 @@ inline msgpack_fd::msgpack_fd(tamer::fd fd) {
 
 inline void msgpack_fd::initialize(tamer::fd fd) {
     initialize(fd, fd);
+}
+
+inline bool msgpack_fd::valid() const {
+    return rfd_.valid() && wfd_.valid();
+}
+
+inline msgpack_fd::operator unspecified_bool_type() const {
+    return valid() ? &msgpack_fd::valid : 0;
+}
+
+inline bool msgpack_fd::operator!() const {
+    return !valid();
 }
 
 template <typename R>
