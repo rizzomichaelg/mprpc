@@ -106,7 +106,7 @@ inline msgpack_fd::msgpack_fd() {
 
 inline msgpack_fd::msgpack_fd(tamer::fd rfd, tamer::fd wfd) {
     construct();
-    initialize(wfd, rfd);
+    initialize(rfd, wfd);
 }
 
 inline msgpack_fd::msgpack_fd(tamer::fd fd) {
