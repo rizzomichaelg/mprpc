@@ -9,6 +9,22 @@ static Json param = Json();
 
 tamed void handle_client(tamer::fd cfd);
 
+enum {
+    cmd_ping = 1,               // sends back input
+    cmd_barrier = 2             // barrier_name, nproc[, args]
+};
+
+
+// Server code
+
+struct barrier {
+    String name;
+    size_t size;
+    std::vector<msgpack_fd*> mpfds;
+    std::vector<int> seqnos;
+    Json response;
+};
+std::vector<barrier> barriers;
 
 tamed void server(int port) {
     tvars {
@@ -39,13 +55,52 @@ tamed void handle_client(tamer::fd cfd) {
             break;
         }
 
-        req[0] = -req[0].as_i();
+        int cmd = req[0].as_i();
+        req[0] = -cmd;
+
+        if (cmd == cmd_ping)
+            /* do nothing */;
+        else if (cmd == cmd_barrier
+                 && req.size() >= 4
+                 && req[2].is_s()
+                 && req[3].is_i()) {
+            String bname = req[2].as_s();
+            size_t bsize = req[3].as_i();
+
+            size_t bno = 0;
+            while (bno != barriers.size() && barriers[bno].name != bname)
+                ++bno;
+            if (bno == barriers.size()) {
+                barriers.push_back(barrier());
+                barriers[bno].name = bname;
+                barriers[bno].size = bsize;
+                barriers[bno].response = Json::array(-cmd_barrier, 0);
+            }
+            assert(bsize == barriers[bno].size);
+
+            barriers[bno].mpfds.push_back(&mpfd);
+            barriers[bno].seqnos.push_back(req[1].as_i());
+            barriers[bno].response.push_back(req[4]);
+
+            if (barriers[bno].seqnos.size() == bsize) {
+                for (size_t i = 0; i != bsize; ++i) {
+                    barriers[bno].response[1] = barriers[bno].seqnos[i];
+                    barriers[bno].mpfds[i]->write(barriers[bno].response);
+                }
+                barriers.erase(barriers.begin() + bno);
+            }
+            continue;
+        } else
+            req.resize(2);
+
         mpfd.write(req);
     }
 
     cfd.close();
 }
 
+
+// Client code
 
 tamed void client_connect(const char* hostname, int port,
                           tamer::event<tamer::fd> done) {
@@ -93,22 +148,25 @@ tamed void client_pingpong(tamer::fd cfd, size_t n, Json req) {
     }
 }
 
-tamed void clientf_pingpong(const char* hostname, int port, Json req) {
+tamed void clientf_pingpong(const char* hostname, int port, Json req,
+                            int ignore1, int ignore2) {
     tvars { tamer::fd cfd; }
     twait { client_connect(hostname, port, make_event(cfd)); }
     client_pingpong(cfd, param["count"].as_u(10), req);
 }
 
 
-static void print_report(const msgpack_fd& mpfd, size_t nsent, size_t nrecv, double deltat, bool last) {
+static void print_report(size_t nsent, size_t nrecv,
+                         double sent_mb, double recv_mb,
+                         double deltat, bool last) {
     static int last_n = 0;
     if (last || (stdout_isatty && !quiet)) {
         if (last_n)
             fprintf(stdout, "\r%.*s\r", last_n, "");
-        last_n = fprintf(stdout, "%.3fs: %zu (%.3fMB) sent, %zu (%.3fMB) recv, %.3fMB/s tput%s",
-                         deltat, nsent, mpfd.sent_bytes() / 1000000.,
-                         nrecv, mpfd.recv_bytes() / 1000000.,
-                         (mpfd.sent_bytes() + mpfd.recv_bytes()) / (1000000. * deltat),
+        last_n = fprintf(stdout, "%.3fs: %zu (%.3fMB) sent, %zu (%.3fMB) recv, %.3f/s (%.3fMB/s)%s",
+                         deltat, nsent, sent_mb, nrecv, recv_mb,
+                         (nsent + nrecv) / deltat,
+                         (sent_mb + recv_mb) / deltat,
                          last ? "\n" : "");
         fflush(stdout);
         if (last)
@@ -116,9 +174,16 @@ static void print_report(const msgpack_fd& mpfd, size_t nsent, size_t nrecv, dou
     }
 }
 
-tamed void client_windowed(tamer::fd cfd, size_t n, size_t w, Json req) {
+static void print_report(size_t nsent, size_t nrecv, const msgpack_fd& mpfd,
+                         double deltat, bool last) {
+    print_report(nsent, nrecv,
+                 mpfd.sent_bytes() / 1000000., mpfd.recv_bytes() / 1000000.,
+                 deltat, last);
+}
+
+tamed void client_windowed(msgpack_fd& mpfd, size_t n, size_t w, Json req,
+                           int clientno, tamer::event<Json> done) {
     tvars {
-        msgpack_fd mpfd(cfd);
         size_t i, out = 0, sz, bthresh = 1 << 24, nthresh = 1 << 16;
         double t0, t1, tthresh;
         tamer::rendezvous<> r;
@@ -139,22 +204,49 @@ tamed void client_windowed(tamer::fd cfd, size_t n, size_t w, Json req) {
             twait(r);
             --out;
         }
-        if (!quiet
+        if (clientno == 0 && !quiet
             && (i % (1 << 12)) == 0
             && tamer::dnow() >= tthresh) {
-            print_report(mpfd, i, i - out, tamer::dnow() - t0, false);
+            print_report(i, i - out, mpfd, tamer::dnow() - t0, false);
             tthresh += 0.5;
         }
     }
-    print_report(mpfd, i, i - out, tamer::dnow() - t0, true);
+
+    tamer::set_now();
+    done(Json().set("time", tamer::dnow() - t0)
+         .set("nsent", i).set("sent_mb", mpfd.sent_bytes() / 1000000.)
+         .set("nrecv", i - out).set("recv_mb", mpfd.recv_bytes() / 1000000.));
 
     delete[] res;
 }
 
-tamed void clientf_windowed(const char* hostname, int port, Json req) {
-    tvars { tamer::fd cfd; }
+tamed void clientf_windowed(const char* hostname, int port, Json req,
+                            int clientno, int nclients) {
+    tvars { tamer::fd cfd; msgpack_fd mpfd; Json j; }
     twait { client_connect(hostname, port, make_event(cfd)); }
-    client_windowed(cfd, param["count"].as_u(1000000), param["window"].as_u(10), req);
+    mpfd.initialize(cfd);
+    twait { mpfd.call(Json::array(cmd_barrier, 1, "start", nclients),
+                      make_event(j)); }
+    twait { client_windowed(mpfd, param["count"].as_u(1000000),
+                            param["window"].as_u(10), req,
+                            clientno, make_event(j)); }
+    twait { mpfd.call(Json::array(cmd_barrier, mpfd.call_seq(), "end",
+                                  nclients, j),
+                      make_event(j)); }
+
+    if (clientno == 0) {
+        size_t nsent = 0, nrecv = 0;
+        double sent_mb = 0, recv_mb = 0, deltat = 0;
+        for (int i = 0; i != nclients; ++i) {
+            nsent += j[2 + i]["nsent"].as_u();
+            nrecv += j[2 + i]["nrecv"].as_u();
+            sent_mb += j[2 + i]["sent_mb"].as_d();
+            recv_mb += j[2 + i]["recv_mb"].as_d();
+            if (j[2 + i]["time"].as_d() > deltat)
+                deltat = j[2 + i]["time"].as_d();
+        }
+        print_report(nsent, nrecv, sent_mb, recv_mb, deltat, true);
+    }
 }
 
 
@@ -166,25 +258,29 @@ static Clp_Option options[] = {
     { "quiet", 'q', 0, 0, Clp_Negate },
     { "window", 'w', 0, Clp_ValUnsignedLong, 0 },
     { "count", 'n', 0, Clp_ValUnsignedLong, 0 },
-    { "datasize", 'd', 0, Clp_ValUnsignedLong, Clp_Negate }
+    { "datasize", 'd', 0, Clp_ValUnsignedLong, Clp_Negate },
+    { "nclients", 'j', 0, Clp_ValInt, 0 },
 };
 
 int main(int argc, char** argv) {
     tamer::initialize();
 
     bool is_server = false;
-    void (*clientf)(const char*, int, Json) = clientf_windowed;
-    Json req_prototype = Json::array(1, 1);
+    void (*clientf)(const char*, int, Json, int, int) = clientf_windowed;
+    Json req_prototype = Json::array(cmd_ping, 1);
     String hostname = "localhost";
     int port = 18029;
     stdout_isatty = isatty(STDOUT_FILENO);
     Clp_Parser* clp = Clp_NewParser(argc, argv, sizeof(options) / sizeof(options[0]), options);
+    param.set("nclients", 1);
 
     while (Clp_Next(clp) != Clp_Done) {
         if (Clp_IsLong(clp, "listen"))
             is_server = true;
         else if (Clp_IsLong(clp, "client"))
             is_server = false;
+        else if (Clp_IsLong(clp, "nclients"))
+            param.set("nclients", clp->val.i);
         else if (Clp_IsLong(clp, "port"))
             port = clp->val.i;
         else if (Clp_IsLong(clp, "host"))
@@ -205,8 +301,13 @@ int main(int argc, char** argv) {
 
     if (is_server)
         server(port);
-    else
-        clientf(hostname.c_str(), port, req_prototype);
+    else {
+        int nclients = param["nclients"].to_i();
+        int clientno = nclients - 1;
+        while (clientno > 0 && fork() != 0)
+            --clientno;
+        clientf(hostname.c_str(), port, req_prototype, clientno, nclients);
+    }
 
     tamer::loop();
     tamer::cleanup();
