@@ -18,11 +18,39 @@ enum {
 // Server code
 
 struct barrier {
-    String name;
-    size_t size;
-    std::vector<msgpack_fd*> mpfds;
-    std::vector<int> seqnos;
-    Json response;
+    String name_;
+    size_t size_;
+    std::vector<std::pair<msgpack_fd*, int> > clients_;
+    Json response_;
+
+    barrier(const String& name)
+        : name_(name), response_(Json::array(-cmd_barrier, 0)) {
+    }
+    void add(msgpack_fd* mpfd, int seqno, size_t mysize, Json myresponse) {
+        if (clients_.empty())
+            size_ = mysize;
+        assert(size_ == mysize);
+        clients_.push_back(std::make_pair(mpfd, seqno));
+        response_.push_back(myresponse);
+        if (clients_.size() == mysize)
+            release();
+    }
+    void remove(msgpack_fd* mpfd) {
+        for (auto it = clients_.begin(); it != clients_.end(); ++it)
+            if (it->first == mpfd)
+                it->first = 0;
+    }
+    void release() {
+        for (auto it = clients_.begin(); it != clients_.end(); ++it)
+            if (it->first) {
+                response_[1] = it->second;
+                it->first->write(response_);
+            }
+        clients_.clear();
+    }
+    bool done() const {
+        return clients_.empty();
+    }
 };
 std::vector<barrier> barriers;
 
@@ -65,30 +93,15 @@ tamed void handle_client(tamer::fd cfd) {
                  && req[2].is_s()
                  && req[3].is_i()) {
             String bname = req[2].as_s();
-            size_t bsize = req[3].as_i();
-
             size_t bno = 0;
-            while (bno != barriers.size() && barriers[bno].name != bname)
+            while (bno != barriers.size() && barriers[bno].name_ != bname)
                 ++bno;
-            if (bno == barriers.size()) {
-                barriers.push_back(barrier());
-                barriers[bno].name = bname;
-                barriers[bno].size = bsize;
-                barriers[bno].response = Json::array(-cmd_barrier, 0);
-            }
-            assert(bsize == barriers[bno].size);
+            if (bno == barriers.size())
+                barriers.push_back(barrier(bname));
 
-            barriers[bno].mpfds.push_back(&mpfd);
-            barriers[bno].seqnos.push_back(req[1].as_i());
-            barriers[bno].response.push_back(req[4]);
-
-            if (barriers[bno].seqnos.size() == bsize) {
-                for (size_t i = 0; i != bsize; ++i) {
-                    barriers[bno].response[1] = barriers[bno].seqnos[i];
-                    barriers[bno].mpfds[i]->write(barriers[bno].response);
-                }
+            barriers[bno].add(&mpfd, req[1].as_i(), req[3].as_i(), req[4]);
+            if (barriers[bno].done())
                 barriers.erase(barriers.begin() + bno);
-            }
             continue;
         } else
             req.resize(2);
@@ -97,6 +110,8 @@ tamed void handle_client(tamer::fd cfd) {
     }
 
     cfd.close();
+    for (size_t bno = 0; bno != barriers.size(); ++bno)
+        barriers[bno].remove(&mpfd);
 }
 
 
