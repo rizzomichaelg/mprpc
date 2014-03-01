@@ -1,9 +1,9 @@
 dnl Process this file with autoconf to produce a configure script.
 
+AC_INIT([mprpc], [0.1])
 AC_CONFIG_AUX_DIR([tamer])
 AC_PREREQ(2.60)
 
-AC_INIT([mprpc], [0.1])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_FILES([GNUmakefile])
 AC_CONFIG_SUBDIRS([tamer])
