@@ -23,6 +23,7 @@ class msgpack_fd {
     inline bool valid() const;
     inline operator unspecified_bool_type() const;
     inline bool operator!() const;
+    inline size_t call_seq() const;
 
     void write(const Json& j);
     template <typename R>
@@ -132,6 +133,10 @@ inline msgpack_fd::operator unspecified_bool_type() const {
 
 inline bool msgpack_fd::operator!() const {
     return !valid();
+}
+
+inline size_t msgpack_fd::call_seq() const {
+    return rdreply_seq_ + rdreplywait_.size();
 }
 
 template <typename R>
