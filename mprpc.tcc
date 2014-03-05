@@ -156,7 +156,6 @@ tamed void client_pingpong(tamer::fd cfd, size_t n, Json req) {
     }
 
     for (i = 0; i != n && mpfd; ++i) {
-        req[1] = i;
         twait { mpfd.call(req, make_event(res)); }
         if (!quiet)
             std::cout << "call " << req << ": " << res << std::endl;
@@ -209,7 +208,6 @@ tamed void client_windowed(msgpack_fd& mpfd, size_t n, size_t w, Json req,
     tthresh = t0 + 0.5;
     for (i = 0; (i != n || out) && mpfd; ) {
         if (i != n && out < w) {
-            req[1] = i;
             mpfd.call(req, r.make_event(res[i % w]));
             ++out;
             ++i;
@@ -282,7 +280,7 @@ int main(int argc, char** argv) {
 
     bool is_server = false;
     void (*clientf)(const char*, int, Json, int, int) = clientf_windowed;
-    Json req_prototype = Json::array(cmd_ping, 1);
+    Json req_prototype = Json::array(cmd_ping, Json::null);
     String hostname = "localhost";
     int port = 18029;
     stdout_isatty = isatty(STDOUT_FILENO);

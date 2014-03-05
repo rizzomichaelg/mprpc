@@ -25,12 +25,17 @@ class msgpack_fd {
     inline bool operator!() const;
     inline size_t call_seq() const;
 
-    void write(const Json& j);
+    inline void write(const Json& j);
+    inline void write(const Json& j, tamer::event<> done);
+    inline void write(const Json& j, tamer::event<bool> done);
+    void flush(tamer::event<> done);
+    void flush(tamer::event<bool> done);
+
     template <typename R>
     void read_request(tamer::preevent<R, Json> done);
+
     inline void call(const Json& j, tamer::event<Json> reply);
-    void flush(tamer::event<bool> done);
-    void flush(tamer::event<> done);
+
     template <typename R>
     inline void pace(tamer::preevent<R> done);
 
@@ -91,6 +96,7 @@ class msgpack_fd {
     bool dispatch(bool exit_on_request);
     inline bool read_until_request(bool exit_on_request);
     bool read_one_message();
+    void write(const Json& j, bool iscall);
     void write_once();
     inline bool need_pace() const;
     inline bool pace_recovered() const;
@@ -152,15 +158,27 @@ void msgpack_fd::read_request(tamer::preevent<R, Json> receiver) {
         rdreqwait_.push_back(receiver);
 }
 
+inline void msgpack_fd::write(const Json& j) {
+    write(j, false);
+}
+
+inline void msgpack_fd::write(const Json& j, tamer::event<> done) {
+    write(j, false);
+    flush(done);
+}
+
+inline void msgpack_fd::write(const Json& j, tamer::event<bool> done) {
+    write(j, false);
+    flush(done);
+}
+
 inline void msgpack_fd::call(const Json& j, tamer::event<Json> done) {
-    assert(j.is_a() && j[1].is_i());
-    unsigned long seq = j[1].as_i();
-    assert(rdreplywait_.empty() || seq == rdreply_seq_ + rdreplywait_.size());
-    write(j);
-    if (rdreplywait_.empty())
-        rdreply_seq_ = seq;
+    assert(j.is_a() && (j[1].is_null() || j[1].is_i()));
+    write(j, true);
     if (done || !rdreplywait_.empty())
         rdreplywait_.push_back(replyelem{std::move(done), wrpos_ + wrsize_});
+    else
+        ++rdreply_seq_;
     read_until_request(false);
 }
 

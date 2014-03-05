@@ -59,10 +59,11 @@ msgpack_fd::~msgpack_fd() {
     clear_read();
 }
 
-void msgpack_fd::write(const Json& j) {
+void msgpack_fd::write(const Json& j, bool iscall) {
+    assert(!iscall || j.is_a());
+
+    // find StringAccum to write into
     wrelem* w = &wrelem_.back();
-    if (wrsize_ >= wrlowat_ && !wrblocked_)
-        write_once();
     if (w->sa.length() >= wrhiwat) {
         wrelem_.push_back(wrelem());
         w = &wrelem_.back();
@@ -70,12 +71,29 @@ void msgpack_fd::write(const Json& j) {
         w->pos = 0;
     }
     int old_len = w->sa.length();
-    msgpack::unparse(w->sa, j);
+
+    // serialize Json to w->sa
+    msgpack::unparser<StringAccum> mu(w->sa);
+    if (iscall && j[1].is_null()) { // assign sequence number
+        mu << msgpack::array_marker(std::max(j.size(), 2)) << j[0]
+           << (rdreply_seq_ + rdreplywait_.size());
+        for (int i = 2; i < j.size(); ++i)
+            mu << j[i];
+    } else {
+        if (iscall && rdreplywait_.empty())
+            rdreply_seq_ = j[1].as_u();
+        mu << j;
+    }
+
+    // write (if over low-water mark), wake coroutine
     wrsize_ += w->sa.length() - old_len;
     wrtotal_ += w->sa.length() - old_len;
-    if (wrwake_)
+    if (wrsize_ >= wrlowat_ && !wrblocked_)
+        write_once();
+    if (wrsize_ > 0 && wrwake_) {
         tamer::at_asap(std::move(wrwake_));
-    assert(!wrwake_);
+        assert(!wrwake_);
+    }
 }
 
 void msgpack_fd::flush(tamer::event<bool> done) {
