@@ -346,21 +346,9 @@ class Json {
         Json_rep_item<uint64_t> u;
         Json_rep_item<double> d;
         String::rep_type str;
-        struct {
-            ArrayJson* a;
-            int padding;
-            int type;
-        } a;
-        struct {
-            ObjectJson* o;
-            int padding;
-            int type;
-        } o;
-        struct {
-            ComplexJson* c;
-            int padding;
-            int type;
-        } x;
+        Json_rep_item<ArrayJson*> a;
+        Json_rep_item<ObjectJson*> o;
+        Json_rep_item<ComplexJson*> x;
     } u_;
 
     inline void deref();
@@ -481,22 +469,22 @@ inline void Json::ComplexJson::deref(json_type j) {
 
 inline Json::ArrayJson* Json::ajson() const {
     precondition(u_.x.type == j_null || u_.x.type == j_array);
-    return u_.a.a;
+    return u_.a.x;
 }
 
 inline Json::ObjectJson* Json::ojson() const {
     precondition(u_.x.type == j_null || u_.x.type == j_object);
-    return u_.o.o;
+    return u_.o.x;
 }
 
 inline void Json::uniqueify_array(bool convert, int ncap) {
-    if (u_.x.type != j_array || !u_.a.a || u_.a.a->refcount != 1
-        || (ncap > 0 && ncap > u_.a.a->capacity))
+    if (u_.x.type != j_array || !u_.a.x || u_.a.x->refcount != 1
+        || (ncap > 0 && ncap > u_.a.x->capacity))
 	hard_uniqueify_array(convert, ncap);
 }
 
 inline void Json::uniqueify_object(bool convert) {
-    if (u_.x.type != j_object || !u_.o.o || u_.o.o->refcount != 1)
+    if (u_.x.type != j_object || !u_.o.x || u_.o.x->refcount != 1)
 	hard_uniqueify_object(convert);
 }
 
@@ -793,7 +781,7 @@ class Json::iterator : public const_iterator { public:
     iterator() {
     }
     value_type& operator*() const {
-	if (j_->u_.x.c->refcount != 1)
+	if (j_->u_.x.x->refcount != 1)
             uniqueify();
 	return const_cast<value_type&>(const_iterator::operator*());
     }
@@ -1417,16 +1405,16 @@ inline Json::Json(const Json& x)
     : u_(x.u_) {
     if (u_.x.type < 0)
         u_.str.ref();
-    if (u_.x.c && (u_.x.type == j_array || u_.x.type == j_object))
-        u_.x.c->ref();
+    if (u_.x.x && (u_.x.type == j_array || u_.x.type == j_object))
+        u_.x.x->ref();
 }
 /** @overload */
 template <typename P> inline Json::Json(const Json_proxy_base<P>& x)
     : u_(x.cvalue().u_) {
     if (u_.x.type < 0)
         u_.str.ref();
-    if (u_.x.c && (u_.x.type == j_array || u_.x.type == j_object))
-        u_.x.c->ref();
+    if (u_.x.x && (u_.x.type == j_array || u_.x.type == j_object))
+        u_.x.x->ref();
 }
 #if HAVE_CXX_RVALUE_REFERENCES
 /** @overload */
@@ -1486,11 +1474,11 @@ inline Json::Json(const char* x) {
 template <typename T>
 inline Json::Json(const std::vector<T> &x) {
     u_.a.type = j_array;
-    u_.a.a = ArrayJson::make(int(x.size()));
+    u_.a.x = ArrayJson::make(int(x.size()));
     for (typename std::vector<T>::const_iterator it = x.begin();
          it != x.end(); ++it) {
-	new((void*) &u_.a.a->a[u_.a.a->size]) Json(*it);
-        ++u_.a.a->size;
+	new((void*) &u_.a.x->a[u_.a.x->size]) Json(*it);
+        ++u_.a.x->size;
     }
 }
 
@@ -1522,8 +1510,8 @@ inline Json::Json(T first, T last) {
 inline void Json::deref() {
     if (u_.x.type < 0)
         u_.str.deref();
-    else if (u_.x.c && unsigned(u_.x.type - j_array) < 2)
-        u_.x.c->deref(json_type(u_.x.type));
+    else if (u_.x.x && unsigned(u_.x.type - j_array) < 2)
+        u_.x.x->deref(json_type(u_.x.type));
 }
 /** @endcond never */
 
@@ -1556,7 +1544,7 @@ inline Json Json::array(T first, U... rest) {
 inline Json Json::make_array_reserve(int n) {
     Json j;
     j.u_.a.type = j_array;
-    j.u_.a.a = n ? ArrayJson::make(n) : 0;
+    j.u_.a.x = n ? ArrayJson::make(n) : 0;
     return j;
 }
 /** @brief Return an empty object-valued Json. */
@@ -1576,7 +1564,7 @@ inline Json Json::make_string(const char *s, int len) {
 
 /** @brief Test if this Json is truthy. */
 inline bool Json::truthy() const {
-    return (u_.x.c ? u_.x.type >= 0 || u_.str.length
+    return (u_.x.x ? u_.x.type >= 0 || u_.str.length
             : (unsigned) (u_.x.type - 1) < (unsigned) (j_int - 1));
 }
 /** @brief Test if this Json is truthy.
@@ -1584,14 +1572,14 @@ inline bool Json::truthy() const {
 inline Json::operator unspecified_bool_type() const {
     return truthy() ? &Json::is_null : 0;
 }
-/** @brief Return true if this Json is null. */
+/** @brief Return true if this Json is falsy. */
 inline bool Json::operator!() const {
     return !truthy();
 }
 
 /** @brief Test this Json's type. */
 inline bool Json::is_null() const {
-    return !u_.x.c && u_.x.type == j_null;
+    return !u_.x.x && u_.x.type == j_null;
 }
 inline bool Json::is_int() const {
     return u_.x.type == j_int;
@@ -1618,10 +1606,10 @@ inline bool Json::is_b() const {
     return u_.x.type == j_bool;
 }
 inline bool Json::is_string() const {
-    return u_.x.c && u_.x.type <= 0;
+    return u_.x.x && u_.x.type <= 0;
 }
 inline bool Json::is_s() const {
-    return u_.x.c && u_.x.type <= 0;
+    return u_.x.x && u_.x.type <= 0;
 }
 inline bool Json::is_array() const {
     return u_.x.type == j_array;
@@ -1637,25 +1625,25 @@ inline bool Json::is_o() const {
 }
 /** @brief Test if this Json is a primitive value, not including null. */
 inline bool Json::is_primitive() const {
-    return u_.x.type >= j_int || (u_.x.c && u_.x.type <= 0);
+    return u_.x.type >= j_int || (u_.x.x && u_.x.type <= 0);
 }
 
 /** @brief Return true if this Json is null, an empty array, or an empty
     object. */
 inline bool Json::empty() const {
     return unsigned(u_.x.type) < unsigned(j_int)
-        && (!u_.x.c || u_.x.c->size == 0);
+        && (!u_.x.x || u_.x.x->size == 0);
 }
 /** @brief Return the number of elements in this complex Json.
     @pre is_array() || is_object() || is_null() */
 inline Json::size_type Json::size() const {
     precondition(unsigned(u_.x.type) < unsigned(j_int));
-    return u_.x.c ? u_.x.c->size : 0;
+    return u_.x.x ? u_.x.x->size : 0;
 }
 /** @brief Test if this complex Json is shared. */
 inline bool Json::shared() const {
-    return u_.x.c && (u_.x.type == j_array || u_.x.type == j_object)
-        && u_.x.c->refcount != 1;
+    return u_.x.x && (u_.x.type == j_array || u_.x.type == j_object)
+        && u_.x.x->refcount != 1;
 }
 
 // Primitive methods
@@ -1887,7 +1875,7 @@ inline bool Json::as_b(bool default_value) const {
     "[Array]" and "[Object]", respectively.
     @sa as_s() */
 inline String Json::to_s() const {
-    if (u_.x.type <= 0 && u_.x.c)
+    if (u_.x.type <= 0 && u_.x.x)
 	return String(u_.str);
     else
 	return hard_to_s();
@@ -1899,7 +1887,7 @@ inline String Json::to_s() const {
 
     If !is_string(), @a x remains unchanged. */
 inline bool Json::to_s(Str& x) const {
-    if (u_.x.type <= 0 && u_.x.c) {
+    if (u_.x.type <= 0 && u_.x.x) {
 	x.assign(u_.str.data, u_.str.length);
 	return true;
     } else
@@ -1912,7 +1900,7 @@ inline bool Json::to_s(Str& x) const {
 
     If !is_string(), @a x remains unchanged. */
 inline bool Json::to_s(String& x) const {
-    if (u_.x.type <= 0 && u_.x.c) {
+    if (u_.x.type <= 0 && u_.x.x) {
         x.assign(u_.str);
 	return true;
     } else
@@ -1923,21 +1911,21 @@ inline bool Json::to_s(String& x) const {
     @pre is_string()
     @sa to_s() */
 inline const String& Json::as_s() const {
-    precondition(u_.x.type <= 0 && u_.x.c);
+    precondition(u_.x.type <= 0 && u_.x.x);
     return reinterpret_cast<const String&>(u_.str);
 }
 
 /** @brief Return the value of this string Json or @a default_value. */
 inline const String& Json::as_s(const String& default_value) const {
-    if (u_.x.type > 0 || !u_.x.c)
+    if (u_.x.type > 0 || !u_.x.x)
         return default_value;
     else
         return as_s();
 }
 
 inline void Json::force_number() {
-    precondition((u_.x.type == j_null && !u_.x.c) || u_.x.type == j_int || u_.x.type == j_double);
-    if (u_.x.type == j_null && !u_.x.c)
+    precondition((u_.x.type == j_null && !u_.x.x) || u_.x.type == j_int || u_.x.type == j_double);
+    if (u_.x.type == j_null && !u_.x.x)
 	u_.x.type = j_int;
 }
 
@@ -1949,7 +1937,7 @@ inline void Json::force_number() {
     Returns 0 if this is not an object Json. */
 inline Json::size_type Json::count(Str key) const {
     precondition(u_.x.type == j_null || u_.x.type == j_object);
-    return u_.o.o ? ojson()->find(key.data(), key.length()) >= 0 : 0;
+    return u_.o.x ? ojson()->find(key.data(), key.length()) >= 0 : 0;
 }
 
 /** @brief Return the value at @a key in an object or array Json.
@@ -2142,7 +2130,7 @@ inline Json_object_str_proxy<Json> Json::operator[](const char* key) {
 /** @brief Return the value at @a key in an object Json.
     @pre is_object() && count(@a key) */
 inline const Json& Json::at(Str key) const {
-    precondition(is_object() && u_.o.o);
+    precondition(is_object() && u_.o.x);
     ObjectJson *oj = ojson();
     int i = oj->find(key.data(), key.length());
     precondition(i >= 0);
@@ -2259,7 +2247,7 @@ inline Json::size_type Json::erase(Str key) {
 inline Json& Json::merge(const Json& x) {
     precondition(is_object() || is_null());
     precondition(x.is_object() || x.is_null());
-    if (x.u_.o.o) {
+    if (x.u_.o.x) {
 	uniqueify_object(false);
 	ObjectJson *oj = ojson(), *xoj = x.ojson();
 	const ObjectItem *xb = xoj->os_, *xe = xb + xoj->n_;
@@ -2348,16 +2336,16 @@ inline Json_array_proxy<Json> Json::operator[](size_type x) {
 /** @brief Return the last array element.
     @pre is_array() && !empty() */
 inline const Json& Json::back() const {
-    precondition(is_array() && u_.a.a && u_.a.a->size > 0);
-    return u_.a.a->a[u_.a.a->size - 1];
+    precondition(is_array() && u_.a.x && u_.a.x->size > 0);
+    return u_.a.x->a[u_.a.x->size - 1];
 }
 
 /** @brief Return a reference to the last array element.
     @pre is_array() && !empty() */
 inline Json& Json::back() {
-    precondition(is_array() && u_.a.a && u_.a.a->size > 0);
+    precondition(is_array() && u_.a.x && u_.a.x->size > 0);
     uniqueify_array(false, 0);
-    return u_.a.a->a[u_.a.a->size - 1];
+    return u_.a.x->a[u_.a.x->size - 1];
 }
 
 /** @brief Push an element onto the back of the array.
@@ -2366,26 +2354,26 @@ inline Json& Json::back() {
 
     A null Json is promoted to an array. */
 template <typename T> inline Json& Json::push_back(T x) {
-    uniqueify_array(false, u_.a.a ? u_.a.a->size + 1 : 1);
-    new((void*) &u_.a.a->a[u_.a.a->size]) Json(x);
-    ++u_.a.a->size;
+    uniqueify_array(false, u_.a.x ? u_.a.x->size + 1 : 1);
+    new((void*) &u_.a.x->a[u_.a.x->size]) Json(x);
+    ++u_.a.x->size;
     return *this;
 }
 
 /** @overload */
 template <typename P> inline Json& Json::push_back(const Json_proxy_base<P>& x) {
-    uniqueify_array(false, u_.a.a ? u_.a.a->size + 1 : 1);
-    new((void*) &u_.a.a->a[u_.a.a->size]) Json(x.cvalue());
-    ++u_.a.a->size;
+    uniqueify_array(false, u_.a.x ? u_.a.x->size + 1 : 1);
+    new((void*) &u_.a.x->a[u_.a.x->size]) Json(x.cvalue());
+    ++u_.a.x->size;
     return *this;
 }
 
 #if HAVE_CXX_RVALUE_REFERENCES
 /** @overload */
 inline Json& Json::push_back(Json&& x) {
-    uniqueify_array(false, u_.a.a ? u_.a.a->size + 1 : 1);
-    new((void*) &u_.a.a->a[u_.a.a->size]) Json(std::move(x));
-    ++u_.a.a->size;
+    uniqueify_array(false, u_.a.x ? u_.a.x->size + 1 : 1);
+    new((void*) &u_.a.x->a[u_.a.x->size]) Json(std::move(x));
+    ++u_.a.x->size;
     return *this;
 }
 #endif
@@ -2393,10 +2381,10 @@ inline Json& Json::push_back(Json&& x) {
 /** @brief Remove the last element from an array.
     @pre is_array() && !empty() */
 inline void Json::pop_back() {
-    precondition(is_array() && u_.a.a && u_.a.a->size > 0);
+    precondition(is_array() && u_.a.x && u_.a.x->size > 0);
     uniqueify_array(false, 0);
-    --u_.a.a->size;
-    u_.a.a->a[u_.a.a->size].~Json();
+    --u_.a.x->size;
+    u_.a.x->a[u_.a.x->size].~Json();
 }
 
 inline Json& Json::insert_back() {
@@ -2418,22 +2406,22 @@ inline Json& Json::insert_back(T first, U... rest) {
 
 inline Json* Json::array_data() {
     precondition(is_null() || is_array());
-    return u_.a.a ? u_.a.a->a : 0;
+    return u_.a.x ? u_.a.x->a : 0;
 }
 
 inline const Json* Json::array_data() const {
     precondition(is_null() || is_array());
-    return u_.a.a ? u_.a.a->a : 0;
+    return u_.a.x ? u_.a.x->a : 0;
 }
 
 inline Json* Json::end_array_data() {
     precondition(is_null() || is_array());
-    return u_.a.a ? u_.a.a->a + u_.a.a->size : 0;
+    return u_.a.x ? u_.a.x->a + u_.a.x->size : 0;
 }
 
 inline const Json* Json::end_array_data() const {
     precondition(is_null() || is_array());
-    return u_.a.a ? u_.a.a->a + u_.a.a->size : 0;
+    return u_.a.x ? u_.a.x->a + u_.a.x->size : 0;
 }
 
 
@@ -2752,8 +2740,8 @@ inline Json Json::parse(const char *first, const char *last) {
 inline Json& Json::operator=(const Json& x) {
     if (x.u_.x.type < 0)
         x.u_.str.ref();
-    else if (x.u_.x.c && (x.u_.x.type == j_array || x.u_.x.type == j_object))
-        x.u_.x.c->ref();
+    else if (x.u_.x.x && (x.u_.x.type == j_array || x.u_.x.type == j_object))
+        x.u_.x.x->ref();
     deref();
     u_ = x.u_;
     return *this;
