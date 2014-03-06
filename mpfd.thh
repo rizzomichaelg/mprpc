@@ -23,15 +23,24 @@ class msgpack_fd {
     inline bool valid() const;
     inline operator unspecified_bool_type() const;
     inline bool operator!() const;
+    inline size_t call_seq() const;
 
-    void write(const Json& j);
+    inline void write(const Json& j);
+    inline void write(const Json& j, tamer::event<> done);
+    inline void write(const Json& j, tamer::event<bool> done);
+    void flush(tamer::event<> done);
+    void flush(tamer::event<bool> done);
+
     template <typename R>
     void read_request(tamer::preevent<R, Json> done);
+
     inline void call(const Json& j, tamer::event<Json> reply);
-    void flush(tamer::event<bool> done);
-    void flush(tamer::event<> done);
+
     template <typename R>
     inline void pace(tamer::preevent<R> done);
+
+    inline size_t wrlowat() const;
+    inline void set_wrlowat(size_t wrlowat);
 
     inline size_t sent_bytes() const;
     inline size_t recv_bytes() const;
@@ -41,7 +50,7 @@ class msgpack_fd {
     tamer::fd wfd_;
     tamer::fd rfd_;
 
-    enum { wrcap = 1 << 17, wrlowat = 1 << 12, wrhiwat = wrcap - 2048 };
+    enum { wrcap = 1 << 17, wrhiwat = wrcap - 2048 };
     struct wrelem {
         StringAccum sa;
         int pos;
@@ -53,6 +62,7 @@ class msgpack_fd {
     std::deque<wrelem> wrelem_;
     size_t wrpos_;
     size_t wrsize_;
+    size_t wrlowat_;
     size_t wrtotal_;
     bool wrblocked_;
     std::deque<flushelem> flushelem_;
@@ -86,6 +96,7 @@ class msgpack_fd {
     bool dispatch(bool exit_on_request);
     inline bool read_until_request(bool exit_on_request);
     bool read_one_message();
+    void write(const Json& j, bool iscall);
     void write_once();
     inline bool need_pace() const;
     inline bool pace_recovered() const;
@@ -130,6 +141,10 @@ inline bool msgpack_fd::operator!() const {
     return !valid();
 }
 
+inline size_t msgpack_fd::call_seq() const {
+    return rdreply_seq_ + rdreplywait_.size();
+}
+
 template <typename R>
 void msgpack_fd::read_request(tamer::preevent<R, Json> receiver) {
     if (!rdreqq_.empty()) {
@@ -143,15 +158,27 @@ void msgpack_fd::read_request(tamer::preevent<R, Json> receiver) {
         rdreqwait_.push_back(receiver);
 }
 
+inline void msgpack_fd::write(const Json& j) {
+    write(j, false);
+}
+
+inline void msgpack_fd::write(const Json& j, tamer::event<> done) {
+    write(j, false);
+    flush(done);
+}
+
+inline void msgpack_fd::write(const Json& j, tamer::event<bool> done) {
+    write(j, false);
+    flush(done);
+}
+
 inline void msgpack_fd::call(const Json& j, tamer::event<Json> done) {
-    assert(j.is_a() && j[1].is_i());
-    unsigned long seq = j[1].as_i();
-    assert(rdreplywait_.empty() || seq == rdreply_seq_ + rdreplywait_.size());
-    write(j);
-    if (rdreplywait_.empty())
-        rdreply_seq_ = seq;
+    assert(j.is_a() && (j[1].is_null() || j[1].is_i()));
+    write(j, true);
     if (done || !rdreplywait_.empty())
         rdreplywait_.push_back(replyelem{std::move(done), wrpos_ + wrsize_});
+    else
+        ++rdreply_seq_;
     read_until_request(false);
 }
 
@@ -176,6 +203,14 @@ inline void msgpack_fd::pace(tamer::preevent<R> done) {
         pacer_ = tamer::distribute(std::move(pacer_), std::move(done));
     else
         done();
+}
+
+inline size_t msgpack_fd::wrlowat() const {
+    return wrlowat_;
+}
+
+inline void msgpack_fd::set_wrlowat(size_t wrlowat) {
+    wrlowat_ = wrlowat;
 }
 
 inline size_t msgpack_fd::sent_bytes() const {
