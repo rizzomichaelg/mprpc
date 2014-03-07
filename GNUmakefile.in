@@ -17,7 +17,7 @@ LIBS = $(LIBTAMER) `$(TAMER) -l` @LIBS@ -lpthread -lm
 LDFLAGS = @LDFLAGS@
 
 TAMEDDIR = $(DEPSDIR)
-TAMER_COMMIT = 93f24f36892bdc607f70a78f16284ec5293a37cd
+TAMER_COMMIT = 7f790508d8a00eeb8cac901f6f988c009e519e3d
 
 CXXCOMPILE = $(CXX) $(DEFS) $(CPPFLAGS) $(CXXFLAGS)
 CXXLINK = $(CXX) $(CXXFLAGS)
@@ -90,7 +90,7 @@ clean:
 
 # tamer dependencies
 mpfd.o: $(TAMEDDIR)/mpfd.hh $(TAMEDDIR)/mpfd.cc
-mprpc.o: $(TAMEDDIR)/mprpc.cc $(TAMEDDIR)/mpfd.hh
+mprpc.o: $(TAMEDDIR)/mpfd.hh $(TAMEDDIR)/mprpc.cc
 
 DEPFILES := $(wildcard $(DEPSDIR)/*.d)
 ifneq ($(DEPFILES),)

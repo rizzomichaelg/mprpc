@@ -63,57 +63,83 @@ inline char* write_bool(char* s, bool x) {
     *s++ = ffalse + x;
     return s;
 }
-inline char* write_int(char* s, uint32_t x) {
-    if (x < nfixuint)
-        *s++ = x;
-    else if (x < 256) {
-        *s++ = fuint8;
-        *s++ = x;
-    } else if (x < 65536) {
-        *s++ = fuint16;
-        s = write_in_net_order<uint16_t>(s, (uint16_t) x);
-    } else {
-        *s++ = fuint32;
-        s = write_in_net_order<uint32_t>(s, x);
+
+template <size_t s> struct sized_writer {};
+template <> struct sized_writer<4> {
+    static inline char* write_unsigned(char* s, uint32_t x) {
+        if (x < nfixuint)
+            *s++ = x;
+        else if (x < 256) {
+            *s++ = fuint8;
+            *s++ = x;
+        } else if (x < 65536) {
+            *s++ = fuint16;
+            s = write_in_net_order<uint16_t>(s, (uint16_t) x);
+        } else {
+            *s++ = fuint32;
+            s = write_in_net_order<uint32_t>(s, x);
+        }
+        return s;
     }
-    return s;
-}
-inline char* write_int(char* s, uint64_t x) {
-    if (x < 4294967296ULL)
-        return write_int(s, (uint32_t) x);
-    else {
-        *s++ = fuint64;
-        return write_in_net_order<uint64_t>(s, x);
+    static inline char* write_signed(char* s, int32_t x) {
+        if ((uint32_t) x + nfixnegint < nfixint)
+            *s++ = x;
+        else if ((uint32_t) x + 128 < 256) {
+            *s++ = fint8;
+            *s++ = x;
+        } else if ((uint32_t) x + 32768 < 65536) {
+            *s++ = fint16;
+            s = write_in_net_order<int16_t>(s, (int16_t) x);
+        } else {
+            *s++ = fint32;
+            s = write_in_net_order<int32_t>(s, x);
+        }
+        return s;
     }
+};
+template <> struct sized_writer<8> {
+    static inline char* write_unsigned(char* s, uint64_t x) {
+        if (x < 4294967296ULL)
+            return sized_writer<4>::write_unsigned(s, (uint32_t) x);
+        else {
+            *s++ = fuint64;
+            return write_in_net_order<uint64_t>(s, x);
+        }
+    }
+    static inline char* write_signed(char* s, int64_t x) {
+        if (x + 2147483648ULL < 4294967296ULL)
+            return sized_writer<4>::write_signed(s, (int32_t) x);
+        else {
+            *s++ = fint64;
+            return write_in_net_order<int64_t>(s, x);
+        }
+    }
+};
+inline char* write_int(char* s, int x) {
+    return sized_writer<sizeof(x)>::write_signed(s, x);
 }
-inline char* write_wide_int(char* s, uint64_t x) {
+inline char* write_int(char* s, unsigned x) {
+    return sized_writer<sizeof(x)>::write_unsigned(s, x);
+}
+inline char* write_int(char* s, long x) {
+    return sized_writer<sizeof(x)>::write_signed(s, x);
+}
+inline char* write_int(char* s, unsigned long x) {
+    return sized_writer<sizeof(x)>::write_unsigned(s, x);
+}
+#if HAVE_LONG_LONG && SIZEOF_LONG_LONG <= 8
+inline char* write_int(char* s, long long x) {
+    return sized_writer<sizeof(x)>::write_signed(s, x);
+}
+inline char* write_int(char* s, unsigned long long x) {
+    return sized_writer<sizeof(x)>::write_unsigned(s, x);
+}
+#endif
+inline char* write_wide_int64(char* s, uint64_t x) {
     *s++ = fuint64;
     return write_in_net_order<uint64_t>(s, x);
 }
-inline char* write_int(char* s, int32_t x) {
-    if ((uint32_t) x + nfixnegint < nfixint)
-        *s++ = x;
-    else if ((uint32_t) x + 128 < 256) {
-        *s++ = fint8;
-        *s++ = x;
-    } else if ((uint32_t) x + 32768 < 65536) {
-        *s++ = fint16;
-        s = write_in_net_order<int16_t>(s, (int16_t) x);
-    } else {
-        *s++ = fint32;
-        s = write_in_net_order<int32_t>(s, x);
-    }
-    return s;
-}
-inline char* write_int(char* s, int64_t x) {
-    if (x + 2147483648ULL < 4294967296ULL)
-        return write_int(s, (int32_t) x);
-    else {
-        *s++ = fint64;
-        return write_in_net_order<int64_t>(s, x);
-    }
-}
-inline char* write_wide_int(char* s, int64_t x) {
+inline char* write_wide_int64(char* s, int64_t x) {
     *s++ = fint64;
     return write_in_net_order<int64_t>(s, x);
 }
@@ -196,34 +222,46 @@ class unparser {
         base_.append((char) format::fnull);
         return *this;
     }
-    inline unparser<T>& operator<<(int32_t x) {
+    inline unparser<T>& operator<<(int x) {
         char* s = base_.reserve(sizeof(x) + 1);
         base_.set_end(format::write_int(s, x));
         return *this;
     }
-    inline unparser<T>& operator<<(uint32_t x) {
+    inline unparser<T>& operator<<(unsigned x) {
         char* s = base_.reserve(sizeof(x) + 1);
         base_.set_end(format::write_int(s, x));
         return *this;
     }
-    inline unparser<T>& operator<<(int64_t x) {
+    inline unparser<T>& operator<<(long x) {
         char* s = base_.reserve(sizeof(x) + 1);
         base_.set_end(format::write_int(s, x));
         return *this;
     }
+    inline unparser<T>& operator<<(unsigned long x) {
+        char* s = base_.reserve(sizeof(x) + 1);
+        base_.set_end(format::write_int(s, x));
+        return *this;
+    }
+#if HAVE_LONG_LONG && SIZEOF_LONG_LONG <= 8
+    inline unparser<T>& operator<<(long long x) {
+        char* s = base_.reserve(sizeof(x) + 1);
+        base_.set_end(format::write_int(s, x));
+        return *this;
+    }
+    inline unparser<T>& operator<<(unsigned long long x) {
+        char* s = base_.reserve(sizeof(x) + 1);
+        base_.set_end(format::write_int(s, x));
+        return *this;
+    }
+#endif
     inline unparser<T>& write_wide(int64_t x) {
         char* s = base_.reserve(sizeof(x) + 1);
-        base_.set_end(format::write_wide_int(s, x));
-        return *this;
-    }
-    inline unparser<T>& operator<<(uint64_t x) {
-        char* s = base_.reserve(sizeof(x) + 1);
-        base_.set_end(format::write_int(s, x));
+        base_.set_end(format::write_wide_int64(s, x));
         return *this;
     }
     inline unparser<T>& write_wide(uint64_t x) {
         char* s = base_.reserve(sizeof(x) + 1);
-        base_.set_end(format::write_wide_int(s, x));
+        base_.set_end(format::write_wide_int64(s, x));
         return *this;
     }
     inline unparser<T>& operator<<(float x) {
