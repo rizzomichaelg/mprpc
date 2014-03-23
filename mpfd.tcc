@@ -6,18 +6,22 @@
 #define IOV_MAX 1024
 #endif
 
-void msgpack_fd::construct() {
+void msgpack_fd::reset() {
     wrpos_ = 0;
     wrsize_ = 0;
-    wrlowat_ = 1 << 12;
-    wrtotal_ = 0;
     wrblocked_ = false;
-    rdbuf_ = String::make_uninitialized(rdcap);
     rdpos_ = 0;
     rdlen_ = 0;
-    rdtotal_ = 0;
     rdquota_ = rdbatch;
     rdreply_seq_ = 0;
+}
+
+void msgpack_fd::construct() {
+    reset();
+    wrlowat_ = 1 << 12;
+    wrtotal_ = 0;
+    rdbuf_ = String::make_uninitialized(rdcap);
+    rdtotal_ = 0;
 
     wrelem_.push_back(wrelem());
     wrelem_.back().sa.reserve(wrcap);
@@ -30,6 +34,26 @@ void msgpack_fd::initialize(tamer::fd rfd, tamer::fd wfd) {
     rfd_ = rfd;
     writer_coroutine();
     reader_coroutine();
+}
+
+void msgpack_fd::destroy() {
+    wrkill_();
+    rdkill_();
+    wrwake_();
+    rdwake_();
+    clear_write();
+    clear_read();
+}
+
+void msgpack_fd::clear() {
+    destroy();
+    wfd_ = rfd_ = tamer::fd();
+    while (wrelem_.size() > 1)
+        wrelem_.pop_front();
+    wrelem_[0].sa.clear();
+    wrelem_[0].pos = 0;
+    rdreqq_.clear();
+    reset();
 }
 
 void msgpack_fd::clear_write() {
@@ -51,12 +75,7 @@ void msgpack_fd::clear_read() {
 }
 
 msgpack_fd::~msgpack_fd() {
-    wrkill_();
-    rdkill_();
-    wrwake_();
-    rdwake_();
-    clear_write();
-    clear_read();
+    destroy();
 }
 
 void msgpack_fd::write(const Json& j, bool iscall) {

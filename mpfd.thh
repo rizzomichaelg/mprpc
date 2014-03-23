@@ -19,6 +19,7 @@ class msgpack_fd {
 
     inline void initialize(tamer::fd fd);
     void initialize(tamer::fd rfd, tamer::fd wfd);
+    void clear();
 
     inline bool valid() const;
     inline operator unspecified_bool_type() const;
@@ -109,6 +110,8 @@ class msgpack_fd {
     msgpack_fd(const msgpack_fd&) = delete;
     msgpack_fd& operator=(const msgpack_fd&) = delete;
     void construct();
+    void reset();
+    void destroy();
 };
 
 inline msgpack_fd::msgpack_fd() {
