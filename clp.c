@@ -1,7 +1,7 @@
 /* clp.c - Complete source code for CLP.
  * This file is part of CLP, the command line parser package.
  *
- * Copyright (c) 1997-2013 Eddie Kohler, ekohler@gmail.com
+ * Copyright (c) 1997-2014 Eddie Kohler, ekohler@gmail.com
  *
  * CLP is free software. It is distributed under the GNU General Public
  * License, Version 2, or, alternatively and at your discretion, under the
@@ -802,7 +802,9 @@ Clp_SetOptions(Clp_Parser *clp, int nopt, const Clp_Option *opt)
     cli->current_option = -1;
 
     /* Massage the options to make them usable */
-    for (i = 0; i < nopt; i++) {
+    for (i = 0; i < nopt; ++i) {
+	memset(&iopt[i], 0, sizeof(iopt[i]));
+
 	/* Ignore negative option_ids, which are internal to CLP */
 	if (opt[i].option_id < 0) {
 	    Clp_OptionError(clp, "CLP internal error: option %d has negative option_id", i);
@@ -1089,7 +1091,7 @@ parse_string(Clp_Parser *clp, const char *arg, int complain, void *user_data)
 }
 
 static int
-parse_int(Clp_Parser *clp, const char *arg, int complain, void* user_data)
+parse_int(Clp_Parser* clp, const char* arg, int complain, void* user_data)
 {
     const char *val;
     uintptr_t type = (uintptr_t) user_data;
@@ -1112,13 +1114,15 @@ parse_int(Clp_Parser *clp, const char *arg, int complain, void* user_data)
         clp->val.u = (unsigned) clp->val.ul;
     if (*arg != 0 && *val == 0)
 	return 1;
-    else if (complain) {
-	const char *message = type & 1
-	    ? "%<%O%> expects a nonnegative integer, not %<%s%>"
-	    : "%<%O%> expects an integer, not %<%s%>";
-	return Clp_OptionError(clp, message, arg);
-    } else
-	return 0;
+    else {
+        if (complain) {
+            const char *message = type & 1
+                ? "%<%O%> expects a nonnegative integer, not %<%s%>"
+                : "%<%O%> expects an integer, not %<%s%>";
+            Clp_OptionError(clp, message, arg);
+        }
+        return 0;
+    }
 }
 
 static int
@@ -1132,10 +1136,11 @@ parse_double(Clp_Parser *clp, const char *arg, int complain, void *user_data)
 	clp->val.d = strtod(arg, (char **) &val);
     if (*arg != 0 && *val == 0)
 	return 1;
-    else if (complain)
-	return Clp_OptionError(clp, "%<%O%> expects a real number, not %<%s%>", arg);
-    else
+    else {
+        if (complain)
+            Clp_OptionError(clp, "%<%O%> expects a real number, not %<%s%>", arg);
 	return 0;
+    }
 }
 
 static int
@@ -1206,7 +1211,7 @@ parse_string_list(Clp_Parser *clp, const char *arg, int complain, void *user_dat
 	}
 	return ambiguity_error
 	    (clp, ambiguous, ambiguous_values, sl->items, sl->iopt,
-	     "", "option %<%O%> value %<%s%> is %s", arg, complaint);
+	     "", "option %<%V%> is %s", complaint);
     } else
 	return 0;
 }
@@ -1998,59 +2003,51 @@ Clp_Shift(Clp_Parser *clp, int allow_options)
  **/
 
 typedef struct Clp_BuildString {
-    char *text;
-    char *pos;
-    int capacity;
-    int bad;
+    char* data;
+    char* pos;
+    char* end_data;
+    char buf[256];
 } Clp_BuildString;
 
-static Clp_BuildString *
-new_build_string(void)
-{
-    Clp_BuildString *bs = (Clp_BuildString *)malloc(sizeof(Clp_BuildString));
-    if (!bs) goto bad;
-    bs->text = (char *)malloc(256);
-    if (!bs->text) goto bad;
-    bs->pos = bs->text;
-    bs->capacity = 256;
-    bs->bad = 0;
-    return bs;
+static void build_string_program_prefix(Clp_BuildString* bs,
+                                        const Clp_Parser* clp);
 
-  bad:
-    if (bs) free(bs);
-    return 0;
+static void build_string_init(Clp_BuildString* bs, Clp_Parser* clp) {
+    bs->data = bs->pos = bs->buf;
+    bs->end_data = &bs->buf[sizeof(bs->buf)];
+    if (clp)
+        build_string_program_prefix(bs, clp);
 }
 
-static void
-free_build_string(Clp_BuildString *bs)
-{
-    if (bs) free(bs->text);
-    free(bs);
+static void build_string_cleanup(Clp_BuildString* bs) {
+    if (bs->data != bs->buf)
+        free(bs->data);
 }
 
-static int
-grow_build_string(Clp_BuildString *bs, int want)
-{
-    char *new_text;
-    int ipos = bs->pos - bs->text;
-    int new_capacity = bs->capacity;
-    while (want >= new_capacity)
-	new_capacity *= 2;
-    new_text = (char *)realloc(bs->text, new_capacity);
-    if (!new_text) {
-	bs->bad = 1;
-	return 0;
+static int build_string_grow(Clp_BuildString* bs, size_t want) {
+    size_t ipos = bs->pos - bs->data, ncap;
+    if (!bs->pos)
+        return 0;
+    for (ncap = (bs->end_data - bs->data) << 1; ncap < want; ncap *= 2)
+        /* nada */;
+    if (bs->data == bs->buf) {
+        if ((bs->data = (char*) malloc(ncap)))
+            memcpy(bs->data, bs->buf, bs->pos - bs->buf);
+    } else
+        bs->data = (char*) realloc(bs->data, ncap);
+    if (!bs->data) {
+        bs->pos = bs->end_data = bs->data;
+        return 0;
     } else {
-	bs->text = new_text;
-	bs->pos = bs->text + ipos;
-	bs->capacity = new_capacity;
-	return 1;
+        bs->pos = bs->data + ipos;
+        bs->end_data = bs->data + ncap;
+        return 1;
     }
 }
 
-#define ENSURE_BUILD_STRING(bs, space) \
-  ((((bs)->pos - (bs)->text) + (space) >= (bs)->capacity)		\
-   || grow_build_string((bs), ((bs)->pos - (bs)->text) + (space)))
+#define ENSURE_BUILD_STRING(bs, space)                                  \
+    ((((bs)->end_data - (bs)->pos) >= (space))                          \
+     || build_string_grow((bs), (bs)->pos - (bs)->data + (space)))
 
 static void
 append_build_string(Clp_BuildString *bs, const char *s, int l)
@@ -2063,23 +2060,24 @@ append_build_string(Clp_BuildString *bs, const char *s, int l)
     }
 }
 
-
-static Clp_BuildString *
-Clp_VaOptionError(Clp_Parser *clp, Clp_BuildString *bs,
-		  const char *fmt, va_list val)
+static void
+build_string_program_prefix(Clp_BuildString* bs, const Clp_Parser* clp)
 {
-    Clp_Internal *cli = clp->internal;
-    const char *percent;
-    int c;
-
-    if (!bs)
-	bs = new_build_string();
-    if (!bs)
-	return 0;
+    const Clp_Internal* cli = clp->internal;
     if (cli->program_name && cli->program_name[0]) {
 	append_build_string(bs, cli->program_name, -1);
 	append_build_string(bs, ": ", 2);
     }
+}
+
+
+static void
+Clp_vbsprintf(Clp_Parser *clp, Clp_BuildString *bs,
+              const char *fmt, va_list val)
+{
+    Clp_Internal *cli = clp->internal;
+    const char *percent;
+    int c;
 
     for (percent = strchr(fmt, '%'); percent; percent = strchr(fmt, '%')) {
 	append_build_string(bs, fmt, percent - fmt);
@@ -2087,10 +2085,7 @@ Clp_VaOptionError(Clp_Parser *clp, Clp_BuildString *bs,
 
 	  case 's': {
 	      const char *s = va_arg(val, const char *);
-	      if (s)
-		  append_build_string(bs, s, -1);
-	      else
-		  append_build_string(bs, "(null)", 6);
+              append_build_string(bs, s ? s : "(null)", -1);
 	      break;
 	  }
 
@@ -2135,45 +2130,55 @@ Clp_VaOptionError(Clp_Parser *clp, Clp_BuildString *bs,
 	      break;
 	  }
 
-	  case 'O': {
-	      int optno = cli->current_option;
-	      const Clp_Option *opt = &cli->opt[optno];
-	      if (optno < 0)
-		  append_build_string(bs, "(no current option!)", -1);
-	      else if (cli->current_short) {
-		  append_build_string(bs, cli->option_chars, -1);
-		  if (ENSURE_BUILD_STRING(bs, 5)) {
-		      if (cli->utf8)
-			  bs->pos = encode_utf8(bs->pos, 5, opt->short_name);
-		      else
-			  *bs->pos++ = opt->short_name;
-		  }
-	      } else if (cli->negated_by_no) {
-		  append_build_string(bs, cli->option_chars, -1);
-		  append_build_string(bs, "no-", 3);
-		  append_build_string(bs, opt->long_name + cli->iopt[optno].ilongoff, -1);
-	      } else {
-		  append_build_string(bs, cli->option_chars, -1);
-		  append_build_string(bs, opt->long_name + cli->iopt[optno].ilongoff, -1);
-	      }
-	      break;
-	  }
+        case 'O':
+        case 'V': {
+            int optno = cli->current_option;
+            const Clp_Option *opt = &cli->opt[optno];
+            if (optno < 0)
+                append_build_string(bs, "(no current option!)", -1);
+            else if (cli->current_short) {
+                append_build_string(bs, cli->option_chars, -1);
+                if (ENSURE_BUILD_STRING(bs, 5)) {
+                    if (cli->utf8)
+                        bs->pos = encode_utf8(bs->pos, 5, opt->short_name);
+                    else
+                        *bs->pos++ = opt->short_name;
+                }
+            } else if (cli->negated_by_no) {
+                append_build_string(bs, cli->option_chars, -1);
+                append_build_string(bs, "no-", 3);
+                append_build_string(bs, opt->long_name + cli->iopt[optno].ilongoff, -1);
+            } else {
+                append_build_string(bs, cli->option_chars, -1);
+                append_build_string(bs, opt->long_name + cli->iopt[optno].ilongoff, -1);
+            }
+            if (optno >= 0 && clp->have_val && *percent == 'V') {
+                if (cli->current_short && !cli->iopt[optno].ioptional)
+                    append_build_string(bs, " ", 1);
+                else if (!cli->current_short)
+                    append_build_string(bs, "=", 1);
+                append_build_string(bs, clp->vstr, -1);
+            }
+            break;
+        }
 
 	  case '%':
 	    if (ENSURE_BUILD_STRING(bs, 1))
 		*bs->pos++ = '%';
 	    break;
 
-	  case '`':		/* backwards compatibility */
 	  case '<':
 	    append_build_string(bs, (cli->utf8 ? "\342\200\230" : "'"), -1);
 	    break;
 
-	  case '\'':		/* backwards compatibility */
 	  case ',':
 	  case '>':
 	    append_build_string(bs, (cli->utf8 ? "\342\200\231" : "'"), -1);
 	    break;
+
+        case 0:
+            append_build_string(bs, "%", 1);
+            goto done;
 
 	  default:
 	    if (ENSURE_BUILD_STRING(bs, 2)) {
@@ -2186,22 +2191,24 @@ Clp_VaOptionError(Clp_Parser *clp, Clp_BuildString *bs,
 	fmt = ++percent;
     }
 
+ done:
     append_build_string(bs, fmt, -1);
-    append_build_string(bs, "\n", 1);
+}
 
-    return bs;
+static const char* build_string_text(Clp_BuildString* bs, int report_oom) {
+    if (bs->pos) {
+        *bs->pos = 0;
+        return bs->data;
+    } else if (report_oom)
+        return "out of memory\n";
+    else
+        return NULL;
 }
 
 static void
 do_error(Clp_Parser *clp, Clp_BuildString *bs)
 {
-    const char *text;
-    if (bs && !bs->bad) {
-	*bs->pos = 0;
-	text = bs->text;
-    } else
-	text = "out of memory\n";
-
+    const char *text = build_string_text(bs, 1);
     if (clp->internal->error_handler != 0)
 	(*clp->internal->error_handler)(clp, text);
     else
@@ -2211,9 +2218,10 @@ do_error(Clp_Parser *clp, Clp_BuildString *bs)
 /** @param clp the parser
  * @param format error format
  *
- * Format an error message from @a format and any additional arguments in the
- * ellipsis.  The resulting error string by printing it to standard error or
- * passing it to Clp_SetErrorHandler.
+ * Format an error message from @a format and any additional arguments in
+ * the ellipsis. The resulting error string is then printed to standard
+ * error (or passed to the error handler specified by Clp_SetErrorHandler).
+ * Returns the number of characters printed.
  *
  * The following format characters are accepted:
  *
@@ -2234,6 +2242,9 @@ do_error(Clp_Parser *clp, Clp_BuildString *bs)
  * <dt><tt>%</tt><tt>O</tt></dt>
  * <dd>The current option.  No values are read from the argument list; the
  * current option is defined in the Clp_Parser object itself.</dd>
+ * <dt><tt>%</tt><tt>V</tt></dt>
+ * <dd>Like <tt>%</tt><tt>O</tt>, but also includes the current value,
+ * if any.</dd>
  * <dt><tt>%%</tt></dt>
  * <dd>Prints a percent character.</dd>
  * <dt><tt>%</tt><tt>&lt;</tt></dt>
@@ -2255,14 +2266,94 @@ do_error(Clp_Parser *clp, Clp_BuildString *bs)
 int
 Clp_OptionError(Clp_Parser *clp, const char *format, ...)
 {
-    Clp_BuildString *bs;
+    Clp_BuildString bs;
     va_list val;
     va_start(val, format);
-    bs = Clp_VaOptionError(clp, 0, format, val);
+    build_string_init(&bs, clp);
+    Clp_vbsprintf(clp, &bs, format, val);
+    append_build_string(&bs, "\n", 1);
     va_end(val);
-    do_error(clp, bs);
-    free_build_string(bs);
-    return 0;
+    do_error(clp, &bs);
+    build_string_cleanup(&bs);
+    return bs.pos - bs.data;
+}
+
+/** @param clp the parser
+ * @param f output file
+ * @param format error format
+ *
+ * Format an error message using @a format and additional arguments in the
+ * ellipsis, according to the Clp_OptionError formatting conventions. The
+ * resulting message is written to @a f.
+ *
+ * @sa Clp_OptionError */
+int
+Clp_fprintf(Clp_Parser* clp, FILE* f, const char* format, ...)
+{
+    Clp_BuildString bs;
+    va_list val;
+    va_start(val, format);
+    build_string_init(&bs, NULL);
+    Clp_vbsprintf(clp, &bs, format, val);
+    va_end(val);
+    if (bs.pos != bs.data)
+        fwrite(bs.data, 1, bs.pos - bs.data, f);
+    build_string_cleanup(&bs);
+    return bs.pos - bs.data;
+}
+
+/** @param clp the parser
+ * @param f output file
+ * @param format error format
+ * @param val arguments
+ *
+ * Format an error message using @a format and @a val, according to the
+ * Clp_OptionError formatting conventions. The resulting message is written
+ * to @a f.
+ *
+ * @sa Clp_OptionError */
+int
+Clp_vfprintf(Clp_Parser* clp, FILE* f, const char* format, va_list val)
+{
+    Clp_BuildString bs;
+    build_string_init(&bs, NULL);
+    Clp_vbsprintf(clp, &bs, format, val);
+    if (bs.pos != bs.data)
+        fwrite(bs.data, 1, bs.pos - bs.data, f);
+    build_string_cleanup(&bs);
+    return bs.pos - bs.data;
+}
+
+/** @param clp the parser
+ * @param str output string
+ * @param size size of output string
+ * @param format error format
+ *
+ * Format an error message from @a format and any additional arguments in
+ * the ellipsis, according to the Clp_OptionError formatting conventions.
+ * The resulting string is written to @a str. At most @a size characters are
+ * written to @a str, including a terminating null byte. The return value is
+ * the number of characters that would have been written (excluding the
+ * terminating null byte) if @a size were large enough to contain the entire
+ * string.
+ *
+ * @sa Clp_OptionError */
+int
+Clp_vsnprintf(Clp_Parser* clp, char* str, size_t size,
+              const char* format, va_list val)
+{
+    Clp_BuildString bs;
+    build_string_init(&bs, NULL);
+    Clp_vbsprintf(clp, &bs, format, val);
+    if ((size_t) (bs.pos - bs.data) < size) {
+        memcpy(str, bs.data, bs.pos - bs.data);
+        str[bs.pos - bs.data] = 0;
+    } else {
+        memcpy(str, bs.data, size - 1);
+        str[size - 1] = 0;
+    }
+    build_string_cleanup(&bs);
+    return bs.pos - bs.data;
 }
 
 static int
@@ -2271,18 +2362,17 @@ ambiguity_error(Clp_Parser *clp, int ambiguous, int *ambiguous_values,
 		const char *prefix, const char *fmt, ...)
 {
     Clp_Internal *cli = clp->internal;
-    Clp_BuildString *bs;
+    Clp_BuildString bs;
     int i;
     va_list val;
-    va_start(val, fmt);
-    bs = Clp_VaOptionError(clp, 0, fmt, val);
-    if (!bs) goto done;
 
-    if (clp->internal->program_name && clp->internal->program_name[0]) {
-	append_build_string(bs, clp->internal->program_name, -1);
-	append_build_string(bs, ": ", 2);
-    }
-    append_build_string(bs, "(Possibilities are", -1);
+    va_start(val, fmt);
+    build_string_init(&bs, clp);
+    Clp_vbsprintf(clp, &bs, fmt, val);
+    append_build_string(&bs, "\n", 1);
+
+    build_string_program_prefix(&bs, clp);
+    append_build_string(&bs, "(Possibilities are", -1);
 
     for (i = 0; i < ambiguous && i < MAX_AMBIGUOUS_VALUES; i++) {
 	int value = ambiguous_values[i];
@@ -2290,26 +2380,25 @@ ambiguity_error(Clp_Parser *clp, int ambiguous, int *ambiguous_values,
 	if (value < 0)
 	    value = -(value + 1), no_dash = "no-";
 	if (i == 0)
-	    append_build_string(bs, " ", 1);
+	    append_build_string(&bs, " ", 1);
 	else if (i == ambiguous - 1)
-	    append_build_string(bs, (i == 1 ? " and " : ", and "), -1);
+	    append_build_string(&bs, (i == 1 ? " and " : ", and "), -1);
 	else
-	    append_build_string(bs, ", ", 2);
-	append_build_string(bs, (cli->utf8 ? "\342\200\230" : "'"), -1);
-	append_build_string(bs, prefix, -1);
-	append_build_string(bs, no_dash, -1);
-	append_build_string(bs, opt[value].long_name + iopt[value].ilongoff, -1);
-	append_build_string(bs, (cli->utf8 ? "\342\200\231" : "'"), -1);
+	    append_build_string(&bs, ", ", 2);
+	append_build_string(&bs, (cli->utf8 ? "\342\200\230" : "'"), -1);
+	append_build_string(&bs, prefix, -1);
+	append_build_string(&bs, no_dash, -1);
+	append_build_string(&bs, opt[value].long_name + iopt[value].ilongoff, -1);
+	append_build_string(&bs, (cli->utf8 ? "\342\200\231" : "'"), -1);
     }
 
     if (ambiguous > MAX_AMBIGUOUS_VALUES)
-	append_build_string(bs, ", and others", -1);
-    append_build_string(bs, ".)\n", -1);
+	append_build_string(&bs, ", and others", -1);
+    append_build_string(&bs, ".)\n", -1);
     va_end(val);
 
-  done:
-    do_error(clp, bs);
-    free_build_string(bs);
+    do_error(clp, &bs);
+    build_string_cleanup(&bs);
     return 0;
 }
 

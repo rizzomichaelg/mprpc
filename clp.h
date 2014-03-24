@@ -7,7 +7,7 @@ extern "C" {
 /* clp.h - Public interface to CLP.
  * This file is part of CLP, the command line parser package.
  *
- * Copyright (c) 1997-2013 Eddie Kohler, ekohler@gmail.com
+ * Copyright (c) 1997-2014 Eddie Kohler, ekohler@gmail.com
  *
  * CLP is free software. It is distributed under the GNU General Public
  * License, Version 2, or, alternatively and at your discretion, under the
@@ -23,6 +23,9 @@ extern "C" {
  * their permission. The Software is provided WITHOUT ANY WARRANTY, EXPRESS
  * OR IMPLIED. This notice is a summary of the Click LICENSE file; the
  * license in that file is binding. */
+
+#include <stdio.h>
+#include <stdarg.h>
 
 typedef struct Clp_Option Clp_Option;
 typedef struct Clp_Parser Clp_Parser;
@@ -300,6 +303,16 @@ void Clp_RestoreParser(Clp_Parser *clp, const Clp_ParserState *state);
 
 /** @brief Report a parser error. */
 int Clp_OptionError(Clp_Parser *clp, const char *format, ...);
+
+/** @brief Format a message. */
+int Clp_vsnprintf(Clp_Parser* clp, char* str, size_t size,
+                  const char* format, va_list val);
+
+/** @brief Print a message. */
+int Clp_fprintf(Clp_Parser* clp, FILE* f, const char* format, ...);
+
+/** @brief Print a message. */
+int Clp_vfprintf(Clp_Parser* clp, FILE* f, const char* format, va_list val);
 
 /** @brief Extract the current option as a string. */
 int Clp_CurOptionNameBuf(Clp_Parser *clp, char *buf, int len);
