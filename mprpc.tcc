@@ -212,20 +212,19 @@ tamed void client_windowed(msgpack_fd& mpfd, size_t n, size_t w, Json req,
             ++out;
             ++i;
             if ((i % (1 << 12)) == 0)
-                tamer::set_now();
+                tamer::set_recent();
         } else {
             twait(r);
             --out;
         }
         if (clientno == 0 && !quiet
             && (i % (1 << 12)) == 0
-            && tamer::dnow() >= tthresh) {
+            && tamer::drecent() >= tthresh) {
             print_report(i, i - out, mpfd, tamer::dnow() - t0, false);
             tthresh += 0.5;
         }
     }
 
-    tamer::set_now();
     done(Json().set("time", tamer::dnow() - t0)
          .set("nsent", i).set("sent_mb", mpfd.sent_bytes() / 1000000.)
          .set("nrecv", i - out).set("recv_mb", mpfd.recv_bytes() / 1000000.));

@@ -1,0 +1,86 @@
+// -*- mode: c++ -*-
+#ifndef MPVR_THH
+#define MPVR_THH 1
+#include "string.hh"
+using tamer::event;
+
+class Vrendpoint {
+  public:
+    inline Vrendpoint(const String& uid)
+        : uid_(uid), connection_version_(0) {
+    }
+
+    inline const String& uid() const {
+        return uid_;
+    }
+    inline unsigned connection_version() const {
+        return connection_version_;
+    }
+
+    static String make_uid();
+
+    virtual bool connected() const;
+    virtual void connect(event<bool> done);
+
+    virtual void read_request(event<Json> done);
+    virtual void call(Json msg, event<Json> done);
+
+  protected:
+    String uid_;
+    unsigned connection_version_;
+};
+
+
+class Vrgroup {
+  public:
+    Vrgroup(String group_name, bool is_master, tamer::fd listenfd);
+
+    String group_name() const {
+        return group_name_;
+    }
+    String uid() const {
+        return uid_;
+    }
+    size_t view_number() const {
+        return viewno_;
+    }
+    size_t commit_number() const {
+        return commitno_;
+    }
+
+    template <typename T>
+    event<T> timeout(event<T> done) const {
+        return tamer::add_timeout(3, done);
+    }
+    template <typename R, typename T>
+    event<T> timeout(tamer::preevent<R, T> done) const {
+        return tamer::add_timeout(3, done);
+    }
+
+  private:
+    String group_name_;
+    tamer::fd listenfd_;
+    String uid_;
+    int listenport_;
+
+    struct clientport {
+        String uid;
+        struct in_addr addr;
+        int port;
+        msgpack_fd mpfd;
+        clientport(String uid, struct in_addr addr, int port)
+            : uid(uid), addr(addr), port(port) {
+        }
+    };
+    std::vector<clientport> network_;
+    int masterindex_;
+    int myindex_;
+
+    size_t viewno_;
+    size_t commitno_;
+    std::deque<Json> log_;
+
+    void set_network(const Json& j);
+};
+
+#endif
