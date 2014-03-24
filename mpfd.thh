@@ -151,11 +151,13 @@ inline size_t msgpack_fd::call_seq() const {
 
 inline void msgpack_fd::read_request(tamer::event<Json> receiver) {
     if (!rdreqq_.empty()) {
-        swap(*receiver.result_pointer(), rdreqq_.front());
+        if (receiver)
+            swap(*receiver.result_pointer(), rdreqq_.front());
         rdreqq_.pop_front();
         receiver.unblock();
     } else if (read_until_request(true)) {
-        swap(*receiver.result_pointer(), rdparser_.result());
+        if (receiver)
+            swap(*receiver.result_pointer(), rdparser_.result());
         receiver.unblock();
     } else
         rdreqwait_.push_back(receiver);
