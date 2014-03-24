@@ -19,6 +19,7 @@ class msgpack_fd {
 
     inline void initialize(tamer::fd fd);
     void initialize(tamer::fd rfd, tamer::fd wfd);
+    void clear();
 
     inline bool valid() const;
     inline operator unspecified_bool_type() const;
@@ -31,6 +32,7 @@ class msgpack_fd {
     void flush(tamer::event<> done);
     void flush(tamer::event<bool> done);
 
+    void read_request(tamer::event<Json> done);
     template <typename R>
     void read_request(tamer::preevent<R, Json> done);
 
@@ -109,6 +111,8 @@ class msgpack_fd {
     msgpack_fd(const msgpack_fd&) = delete;
     msgpack_fd& operator=(const msgpack_fd&) = delete;
     void construct();
+    void reset();
+    void destroy();
 };
 
 inline msgpack_fd::msgpack_fd() {
@@ -143,6 +147,20 @@ inline bool msgpack_fd::operator!() const {
 
 inline size_t msgpack_fd::call_seq() const {
     return rdreply_seq_ + rdreplywait_.size();
+}
+
+inline void msgpack_fd::read_request(tamer::event<Json> receiver) {
+    if (!rdreqq_.empty()) {
+        if (receiver)
+            swap(*receiver.result_pointer(), rdreqq_.front());
+        rdreqq_.pop_front();
+        receiver.unblock();
+    } else if (read_until_request(true)) {
+        if (receiver)
+            swap(*receiver.result_pointer(), rdparser_.result());
+        receiver.unblock();
+    } else
+        rdreqwait_.push_back(receiver);
 }
 
 template <typename R>

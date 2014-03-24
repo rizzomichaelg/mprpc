@@ -1281,3 +1281,88 @@ String::encode_json() const
     } else
 	return *this;
 }
+
+String
+String::encode_base64(bool pad) const
+{
+    const char base64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    static_assert(sizeof(base64_table) == 65, "bad base64_table");
+    StringAccum sa(((length() + 2) * 4) / 3);
+    const unsigned char* s = this->ubegin(), *end = this->uend();
+    char* out = sa.data();
+    for (; end - s >= 3; s += 3) {
+        unsigned x = (s[0] << 16) | (s[1] << 8) | s[2];
+        *out++ = base64_table[x >> 18];
+        *out++ = base64_table[(x >> 12) & 63];
+        *out++ = base64_table[(x >> 6) & 63];
+        *out++ = base64_table[x & 63];
+    }
+    if (end > s) {
+        unsigned x = s[0] << 16;
+        if (end > s + 1)
+            x |= s[1] << 8;
+        *out++ = base64_table[x >> 18];
+        *out++ = base64_table[(x >> 12) & 63];
+        if (end > s + 1)
+            *out++ = base64_table[(x >> 6) & 63];
+        else if (pad)
+            *out++ = '=';
+        if (pad)
+            *out++ = '=';
+    }
+    sa.set_end(out);
+    return sa.take_string();
+}
+
+String
+String::decode_base64() const
+{
+    const unsigned char base64_map[] =
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\x3F\0\0\0\x40"
+        "\x35\x36\x37\x38\x39\x3A\x3B\x3C\x3D\x3E\0\0\0\0\0\0"
+        "\0\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F"
+        "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A\0\0\0\0\0"
+        "\0\x1B\x1C\x1D\x1E\x1F\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29"
+        "\x2A\x2B\x2C\x2D\x2E\x2F\x30\x31\x32\x33\x34\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+    static_assert(sizeof(base64_map) == 256, "bad base64_map");
+
+    StringAccum sa((length() * 3) / 4 + 1);
+    const unsigned char* s = this->ubegin(), *end = this->uend();
+    while (end > s && end[-1] == '=')
+        --end;
+    char* out = sa.data();
+    for (; end - s >= 4; s += 4) {
+        unsigned x = ((((unsigned) base64_map[s[0]]) - 1) << 18)
+            | ((((unsigned) base64_map[s[1]]) - 1) << 12)
+            | ((((unsigned) base64_map[s[2]]) - 1) << 6)
+            | (((unsigned) base64_map[s[3]]) - 1);
+        if ((int) x < 0)
+            return String();
+        *out++ = (unsigned char) (x >> 16);
+        *out++ = (unsigned char) (x >> 8);
+        *out++ = (unsigned char) x;
+    }
+    if (end - s >= 2) {
+        unsigned x = ((((unsigned) base64_map[s[0]]) - 1) << 18)
+            | ((((unsigned) base64_map[s[1]]) - 1) << 12)
+            | (end - s == 3 ? (((unsigned) base64_map[s[2]]) - 1) << 6 : 0);
+        if ((int) x < 0)
+            return String();
+        *out++ = (unsigned char) (x >> 16);
+        if (end - s == 3)
+            *out++ = (unsigned char) (x >> 8);
+    } else if (end - s)
+        return String();
+    sa.set_end(out);
+    return sa.take_string();
+}

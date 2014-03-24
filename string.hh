@@ -110,6 +110,9 @@ class String : public String_base<String> {
 
     String encode_json() const;
 
+    String encode_base64(bool pad = false) const;
+    String decode_base64() const;
+
     inline String& operator=(const String& x);
 #if HAVE_CXX_RVALUE_REFERENCES
     inline String& operator=(String&& x);
