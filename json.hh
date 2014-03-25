@@ -47,7 +47,8 @@ class Json {
     };
 
   public:
-    enum null_marker_type { null };
+    struct null_t {};
+    static const null_t null;
     static const Json null_json;
 
     typedef int size_type;
@@ -74,7 +75,7 @@ class Json {
 #if HAVE_CXX_RVALUE_REFERENCES
     inline Json(Json&& x);
 #endif
-    inline Json(null_marker_type x);
+    inline Json(const null_t& x);
     inline Json(int x);
     inline Json(unsigned x);
     inline Json(long x);
@@ -1403,7 +1404,7 @@ inline Json::Json() {
     memset(&u_, 0, sizeof(u_));
 }
 /** @brief Construct a null Json. */
-inline Json::Json(null_marker_type) {
+inline Json::Json(const null_t&) {
     memset(&u_, 0, sizeof(u_));
 }
 /** @brief Construct a Json copy of @a x. */

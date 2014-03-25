@@ -218,9 +218,17 @@ class unparser {
         : base_(base) {
         *this << x;
     }
+
+    inline void clear() {
+        base_.clear();
+    }
+
     inline unparser<T>& null() {
         base_.append((char) format::fnull);
         return *this;
+    }
+    inline unparser<T>& operator<<(const Json::null_t&) {
+        return null();
     }
     inline unparser<T>& operator<<(int x) {
         char* s = base_.reserve(sizeof(x) + 1);

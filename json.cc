@@ -54,6 +54,7 @@
     the liberal <tt>to_</tt>, <tt>get</tt>, and <tt>operator[]</code>
     functions. */
 
+const Json::null_t Json::null;
 const Json Json::null_json;
 static const String array_string("[Array]", 7);
 static const String object_string("[Object]", 8);
