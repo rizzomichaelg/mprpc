@@ -91,6 +91,27 @@ void check_correctness() {
         assert(a.success() && a.result().unparse() == "{\"compact\":true,\"0\":0}");
     }
 
+    {
+        StringAccum sa;
+        msgpack::unparser<StringAccum> up(sa);
+        up.clear();
+        up << -32;
+        assert(sa.take_string() == "\xE0");
+        up.clear();
+        up << -33;
+        assert(sa.take_string() == "\xD0\xDF");
+        up.clear();
+        up << 127;
+        assert(sa.take_string() == "\x7F");
+        up.clear();
+        up << 128;
+        assert(sa.take_string() == String("\xD1\x00\x80", 3));
+        up << -32768;
+        assert(sa.take_string() == String("\xD1\x80\x00", 3));
+        up << -32769;
+        assert(sa.take_string() == String("\xD2\xFF\xFF\x7F\xFF", 5));
+    }
+
     std::cout << "All tests pass!\n";
 }
 
