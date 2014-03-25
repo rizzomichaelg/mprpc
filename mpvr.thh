@@ -2,12 +2,15 @@
 #ifndef MPVR_THH
 #define MPVR_THH 1
 #include "string.hh"
+#include <unordered_map>
 using tamer::event;
 
 class Vrendpoint {
   public:
     inline Vrendpoint(const String& uid)
         : uid_(uid), connection_version_(0) {
+    }
+    virtual ~Vrendpoint() {
     }
 
     inline const String& uid() const {
@@ -19,11 +22,13 @@ class Vrendpoint {
 
     static String make_uid();
 
-    virtual bool connected() const;
-    virtual void connect(event<bool> done);
+    //virtual bool connected() const;
+    //virtual void connect(event<bool> done);
+    virtual void connect(Json def, event<Vrendpoint*> done);
+    virtual void receive_connection(event<Vrendpoint*> done);
 
-    virtual void read_request(event<Json> done);
-    virtual void call(Json msg, event<Json> done);
+    virtual void send(Json msg);
+    virtual void receive(event<Json> done);
 
   protected:
     String uid_;
@@ -33,16 +38,16 @@ class Vrendpoint {
 
 class Vrgroup {
   public:
-    Vrgroup(String group_name, bool is_master, tamer::fd listenfd);
+    Vrgroup(const String& group_name, Vrendpoint* me);
 
     String group_name() const {
         return group_name_;
     }
     String uid() const {
-        return uid_;
+        return me_ ? me_->uid() : String();
     }
     size_t view_number() const {
-        return viewno_;
+        return view_.viewno;
     }
     size_t commit_number() const {
         return commitno_;
@@ -53,34 +58,48 @@ class Vrgroup {
         return tamer::add_timeout(3, done);
     }
     template <typename R, typename T>
-    event<T> timeout(tamer::preevent<R, T> done) const {
-        return tamer::add_timeout(3, done);
+    event<T> timeout(tamer::preevent<R, T>&& done) const {
+        return tamer::add_timeout(3, std::move(done));
     }
+
+    tamed void connect(Json peer);
 
   private:
     String group_name_;
-    tamer::fd listenfd_;
-    String uid_;
-    int listenport_;
 
-    struct clientport {
-        String uid;
-        struct in_addr addr;
-        int port;
-        msgpack_fd mpfd;
-        clientport(String uid, struct in_addr addr, int port)
-            : uid(uid), addr(addr), port(port) {
-        }
+    struct view_type {
+        size_t viewno;
+        Json members;
+        int primary_index;
+        int my_index;
+        void set_me(const String& uid);
+        inline Json& find(const String& uid);
     };
-    std::vector<clientport> network_;
-    int masterindex_;
-    int myindex_;
 
-    size_t viewno_;
+    view_type view_;
+
+    Vrendpoint* me_;
+    mutable std::unordered_map<String, Vrendpoint*> endpoints_;
+
     size_t commitno_;
     std::deque<Json> log_;
 
-    void set_network(const Json& j);
+    int new_view_count_;
+    int new_view_confirmed_;
+    view_type new_view_;
+
+    bool check_view_members(const Json& vj) const;
+    static bool view_members_equal(const Json& a, const Json& b);
+    Vrendpoint* primary(const view_type& v) const;
+
+    void send_view_status(Vrendpoint* who, bool status);
+    void broadcast_view_status();
+    void process_view_status(Vrendpoint* who, const Json& msg);
+    void start_view_confirm();
+    void process_view_confirm(Vrendpoint* who, const Json& msg);
+    void start_view_adopt();
+
+    tamed void listen_loop();
 };
 
 #endif
