@@ -38,6 +38,7 @@ class msgpack_fd {
 
     inline void call(const Json& j, tamer::event<Json> reply);
 
+    inline void pace(tamer::event<> done);
     template <typename R>
     inline void pace(tamer::preevent<R> done);
 
@@ -213,6 +214,13 @@ inline bool msgpack_fd::need_pace() const {
 
 inline bool msgpack_fd::pace_recovered() const {
     return wrsize_ <= wrpacerecover && rdreplywait_.size() <= rdpacerecover;
+}
+
+inline void msgpack_fd::pace(tamer::event<> done) {
+    if (need_pace())
+        pacer_ = tamer::distribute(std::move(pacer_), std::move(done));
+    else
+        done();
 }
 
 template <typename R>
