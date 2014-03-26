@@ -332,6 +332,34 @@ void Json::clear() {
     }
 }
 
+void* Json::uniqueify_array_insert(bool convert, size_type pos) {
+    size_type size = u_.a.x ? u_.a.x->size : 0;
+    uniqueify_array(convert, size + 1);
+    if (pos == (size_type) -1)
+        pos = size;
+    precondition(pos >= 0 && pos <= size);
+    if (pos != size)
+        memmove(&u_.a.x->a[pos + 1], &u_.a.x->a[pos], (size - pos) * sizeof(Json));
+    ++u_.a.x->size;
+    return (void*) &u_.a.x->a[pos];
+}
+
+Json::array_iterator Json::erase(array_iterator first, array_iterator last) {
+    if (first < last) {
+        uniqueify_array(false, 0);
+        size_type fpos = first - abegin();
+        size_type lpos = last - abegin();
+        size_type size = u_.a.x->size;
+        for (size_type pos = fpos; pos != lpos; ++pos)
+            u_.a.x->a[pos].~Json();
+        if (lpos != size)
+            memmove(&u_.a.x->a[fpos], &u_.a.x->a[lpos],
+                    (size - lpos) * sizeof(Json));
+        u_.a.x->size -= lpos - fpos;
+    }
+    return first;
+}
+
 /** @brief Resize the array Json to size @a n. */
 void Json::resize(size_type n) {
     uniqueify_array(false, n);

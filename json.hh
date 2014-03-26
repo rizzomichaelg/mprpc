@@ -98,6 +98,8 @@ class Json {
     template <typename T, typename... U>
     static inline Json array(T first, U... rest);
     static inline Json make_object();
+    template <typename... Args>
+    static inline Json object(Args... rest);
     static inline Json make_string(const String& x);
     static inline Json make_string(const char* s, int len);
 
@@ -198,6 +200,9 @@ class Json {
     inline Json& set(const String& key, Json&& x);
 #endif
     inline Json& unset(Str key);
+    inline Json& multiset();
+    template <typename T, typename... U>
+    inline Json& multiset(const String& key, T value, U... rest);
 
     inline std::pair<object_iterator, bool> insert(const object_value_type& x);
     inline object_iterator insert(object_iterator position,
@@ -231,6 +236,16 @@ class Json {
     inline Json& insert_back();
     template <typename T, typename... U>
     inline Json& insert_back(T first, U... rest);
+
+    template <typename T>
+    inline array_iterator insert(array_iterator position, T x);
+    template <typename P>
+    inline array_iterator insert(array_iterator position, const Json_proxy_base<P>& x);
+#if HAVE_CXX_RVALUE_REFERENCES
+    inline array_iterator insert(array_iterator position, Json&& x);
+#endif
+    array_iterator erase(array_iterator first, array_iterator last);
+    inline array_iterator erase(array_iterator position);
 
     void resize(size_type n);
 
@@ -365,7 +380,10 @@ class Json {
     bool hard_to_b() const;
     String hard_to_s() const;
     inline void force_number();
+    inline void force_double();
+    inline Json& add(double x);
     template <typename T> inline Json& add(T x);
+    inline Json& subtract(double x);
     template <typename T> inline Json& subtract(T x);
 
     const Json& hard_get(Str key) const;
@@ -376,6 +394,7 @@ class Json {
     void hard_uniqueify_object(bool convert);
     inline void uniqueify_array(bool convert, int ncap);
     void hard_uniqueify_array(bool convert, int ncap);
+    void* uniqueify_array_insert(bool convert, size_type pos);
 
     static unparse_manipulator default_manipulator;
     bool unparse_is_complex() const;
@@ -388,6 +407,8 @@ class Json {
     friend class const_object_iterator;
     friend class array_iterator;
     friend class const_array_iterator;
+    friend Json operator+(Json);
+    friend Json operator-(Json);
 };
 
 
@@ -661,6 +682,14 @@ class Json::array_iterator : public const_array_iterator { public:
     Json& value() const {
 	return **this;
     }
+    array_iterator& operator+=(difference_type x) {
+	i_ += x;
+	return *this;
+    }
+    array_iterator& operator-=(difference_type x) {
+	i_ -= x;
+	return *this;
+    }
   private:
     array_iterator(Json* j, int i)
 	: const_array_iterator(j, i) {
@@ -695,8 +724,14 @@ inline bool operator>=(const Json::const_array_iterator& a, const Json::const_ar
 inline Json::const_array_iterator operator+(Json::const_array_iterator a, Json::const_array_iterator::difference_type i) {
     return a += i;
 }
+inline Json::array_iterator operator+(Json::array_iterator a, Json::array_iterator::difference_type i) {
+    return a += i;
+}
 
 inline Json::const_array_iterator operator-(Json::const_array_iterator a, Json::const_array_iterator::difference_type i) {
+    return a -= i;
+}
+inline Json::array_iterator operator-(Json::array_iterator a, Json::array_iterator::difference_type i) {
     return a -= i;
 }
 
@@ -1049,6 +1084,11 @@ class Json_proxy_base {
     Json::object_iterator insert(Json::object_iterator position, const Json::object_value_type &x) {
 	return value().insert(position, x);
     }
+#if HAVE_CXX_RVALUE_REFERENCES
+    Json::object_iterator insert(Json::object_iterator position, Json&& x) {
+	return value().insert(position, std::move(x));
+    }
+#endif
     Json::object_iterator erase(Json::object_iterator it) {
         return value().erase(it);
     }
@@ -1088,7 +1128,7 @@ class Json_proxy_base {
     template <typename T> Json& push_back(T x) {
 	return value().push_back(x);
     }
-    template <typename Q> inline Json& push_back(const Json_proxy_base<Q>& x) {
+    template <typename Q> Json& push_back(const Json_proxy_base<Q>& x) {
         return value().push_back(x);
     }
 #if HAVE_CXX_RVALUE_REFERENCES
@@ -1098,6 +1138,23 @@ class Json_proxy_base {
 #endif
     void pop_back() {
 	value().pop_back();
+    }
+    template <typename T> Json::array_iterator insert(Json::array_iterator position, T x) {
+	return value().insert(position, x);
+    }
+    template <typename Q> Json::array_iterator insert(Json::array_iterator position, const Json_proxy_base<Q>& x) {
+        return value().insert(position, x);
+    }
+#if HAVE_CXX_RVALUE_REFERENCES
+    Json::array_iterator insert(Json::array_iterator position, Json&& x) {
+        return value().insert(position, std::move(x));
+    }
+#endif
+    Json::array_iterator erase(Json::array_iterator first, Json::array_iterator last) {
+        return value().erase(first, last);
+    }
+    Json::array_iterator erase(Json::array_iterator position) {
+        return value().erase(position);
     }
     void resize(Json::size_type n) {
         value().resize(n);
@@ -1560,6 +1617,14 @@ inline Json Json::make_object() {
     j.u_.o.type = j_object;
     return j;
 }
+/** @brief Return an empty object-valued Json. */
+template <typename... Args>
+inline Json Json::object(Args... rest) {
+    Json j;
+    j.u_.o.type = j_object;
+    j.multiset(rest...);
+    return j;
+}
 /** @brief Return a string-valued Json. */
 inline Json Json::make_string(const String &x) {
     return Json(x);
@@ -1936,6 +2001,16 @@ inline void Json::force_number() {
 	u_.x.type = j_int;
 }
 
+inline void Json::force_double() {
+    precondition((u_.x.type == j_null && !u_.x.x) || u_.x.type == j_int || u_.x.type == j_double);
+    if (u_.x.type == j_null && !u_.x.x)
+	u_.x.type = j_double;
+    else if (u_.x.type == j_int) {
+        u_.d.x = u_.i.x;
+        u_.d.type = j_double;
+    }
+}
+
 
 // Object methods
 
@@ -2196,6 +2271,22 @@ inline Json& Json::unset(Str key) {
     return *this;
 }
 
+inline Json& Json::multiset() {
+    return *this;
+}
+
+/** @brief Insert the items [first, rest...] onto the back of this array.
+    @pre is_array() || is_null()
+    @return this Json
+
+    A null Json is promoted to an array. */
+template <typename T, typename... U>
+inline Json& Json::multiset(const String& key, T value, U... rest) {
+    set(key, value);
+    multiset(rest...);
+    return *this;
+}
+
 /** @brief Insert element @a x in this object Json.
     @param x Pair of key and value.
     @return Pair of iterator pointing to key's value and bool indicating
@@ -2361,26 +2452,20 @@ inline Json& Json::back() {
 
     A null Json is promoted to an array. */
 template <typename T> inline Json& Json::push_back(T x) {
-    uniqueify_array(false, u_.a.x ? u_.a.x->size + 1 : 1);
-    new((void*) &u_.a.x->a[u_.a.x->size]) Json(x);
-    ++u_.a.x->size;
+    new(uniqueify_array_insert(false, -1)) Json(x);
     return *this;
 }
 
 /** @overload */
 template <typename P> inline Json& Json::push_back(const Json_proxy_base<P>& x) {
-    uniqueify_array(false, u_.a.x ? u_.a.x->size + 1 : 1);
-    new((void*) &u_.a.x->a[u_.a.x->size]) Json(x.cvalue());
-    ++u_.a.x->size;
+    new(uniqueify_array_insert(false, -1)) Json(x.cvalue());
     return *this;
 }
 
 #if HAVE_CXX_RVALUE_REFERENCES
 /** @overload */
 inline Json& Json::push_back(Json&& x) {
-    uniqueify_array(false, u_.a.x ? u_.a.x->size + 1 : 1);
-    new((void*) &u_.a.x->a[u_.a.x->size]) Json(std::move(x));
-    ++u_.a.x->size;
+    new(uniqueify_array_insert(false, -1)) Json(std::move(x));
     return *this;
 }
 #endif
@@ -2408,6 +2493,41 @@ inline Json& Json::insert_back(T first, U... rest) {
     push_back(first);
     insert_back(rest...);
     return *this;
+}
+
+
+/** @brief Insert an element into the array.
+    @pre is_array() || is_null()
+    @return this Json
+
+    A null Json is promoted to an array. */
+template <typename T> inline Json::array_iterator Json::insert(array_iterator position, T x) {
+    precondition(position >= abegin() && position <= aend());
+    size_type pos = position - abegin();
+    new(uniqueify_array_insert(false, pos)) Json(x);
+    return abegin() + pos;
+}
+
+/** @overload */
+template <typename P> inline Json::array_iterator Json::insert(array_iterator position, const Json_proxy_base<P>& x) {
+    precondition(position >= abegin() && position <= aend());
+    size_type pos = position - abegin();
+    new(uniqueify_array_insert(false, pos)) Json(x.cvalue());
+    return abegin() + pos;
+}
+
+#if HAVE_CXX_RVALUE_REFERENCES
+/** @overload */
+inline Json::array_iterator Json::insert(array_iterator position, Json&& x) {
+    precondition(position >= abegin() && position <= aend());
+    size_type pos = position - abegin();
+    new(uniqueify_array_insert(false, pos)) Json(std::move(x));
+    return abegin() + pos;
+}
+#endif
+
+inline Json::array_iterator Json::erase(array_iterator position) {
+    return erase(position, position + 1);
 }
 
 
@@ -2844,6 +2964,11 @@ inline Json& Json::operator--() {
 inline void Json::operator--(int) {
     --(*this);
 }
+inline Json& Json::add(double x) {
+    force_double();
+    u_.d.x += x;
+    return *this;
+}
 template <typename T>
 inline Json& Json::add(T x) {
     force_number();
@@ -2851,6 +2976,11 @@ inline Json& Json::add(T x) {
         u_.i.x += x;
     else
         u_.d.x += x;
+    return *this;
+}
+inline Json& Json::subtract(double x) {
+    force_double();
+    u_.d.x -= x;
     return *this;
 }
 template <typename T>
@@ -2921,6 +3051,18 @@ inline Json& Json::operator-=(const Json& x) {
         u_.d.type = j_double;
     }
     return *this;
+}
+inline Json operator+(Json x) {
+    x.force_number();
+    return x;
+}
+inline Json operator-(Json x) {
+    x.force_number();
+    if (x.u_.x.type == Json::j_int)
+        x.u_.i.x = -x.u_.i.x;
+    else
+        x.u_.d.x = -x.u_.d.x;
+    return x;
 }
 
 /** @brief Swap this Json with @a x. */

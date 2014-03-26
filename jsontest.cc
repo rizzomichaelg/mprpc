@@ -20,6 +20,8 @@
 #include <unordered_map>
 
 #define CHECK(x) do { if (!(x)) { std::cerr << __FILE__ << ":" << __LINE__ << ": test '" << #x << "' failed\n"; exit(1); } } while (0)
+#define CHECK_JUP(x, str) do { if ((x).unparse() != (str)) { std::cerr << __FILE__ << ":" << __LINE__ << ": '" #x "' is '" << (x) << "', not '" << (str) << "'\n"; exit(1); } } while (0)
+
 
 #if 0
 template <typename T> void incr(T& x) __attribute__((noinline));
@@ -508,6 +510,27 @@ int main(int argc, char** argv) {
         CHECK(j["a"] == "b");
         CHECK(j["c"] == "d");
         CHECK(j["x"] == "e");
+    }
+
+    {
+        Json j = Json::array(1, 2, 3, 4, 5, 6, 7, 8);
+        CHECK(j.unparse() == "[1,2,3,4,5,6,7,8]");
+        Json jcopy = j;
+        CHECK(j.unparse() == "[1,2,3,4,5,6,7,8]");
+        CHECK(jcopy.unparse() == "[1,2,3,4,5,6,7,8]");
+        auto it = j.erase(j.abegin() + 4);
+        CHECK_JUP(j, "[1,2,3,4,6,7,8]");
+        CHECK_JUP(jcopy, "[1,2,3,4,5,6,7,8]");
+        CHECK(it == j.abegin() + 4);
+        it = j.erase(j.aend(), j.aend());
+        CHECK_JUP(j, "[1,2,3,4,6,7,8]");
+        CHECK(it == j.aend());
+        it = j.erase(j.abegin(), j.abegin());
+        CHECK_JUP(j, "[1,2,3,4,6,7,8]");
+        CHECK(it == j.abegin());
+        it = j.erase(j.abegin(), j.abegin() + 3);
+        CHECK_JUP(j, "[4,6,7,8]");
+        CHECK(it == j.abegin());
     }
 
     std::cout << "All tests pass!\n";
