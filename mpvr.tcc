@@ -45,19 +45,92 @@ String Vrendpoint::make_uid() {
 //                 members: [ {addr: ADDR, port: PORT, uid: UID}... ],
 //                 me: INDEX, primary: INDEX }
 
+Vrgroup::view_type::view_type()
+    : viewno(0), primary_index(0), my_index(-1) {
+}
+
+bool Vrgroup::view_type::assign(Json msg, const String& my_uid) {
+    if (!msg.is_o())
+        return false;
+    Json viewnoj = msg["viewno"];
+    Json membersj = msg["members"];
+    Json primaryj = msg["primary"];
+    if (!(viewnoj.is_i() && viewnoj >= 0
+          && membersj.is_a()
+          && primaryj.is_i() && primaryj >= 0 && primaryj < membersj.size()))
+        return false;
+
+    viewno = viewnoj.to_u64();
+    members = membersj;
+    primary_index = primaryj.to_i();
+    my_index = -1;
+
+    std::unordered_map<String, int> seen_uids;
+    String uid;
+    for (auto it = members.abegin(); it != members.aend(); ++it) {
+        if (!it->is_object()
+            || !it->get("uid").is_string()
+            || !(uid = it->get("uid").to_s())
+            || seen_uids.find(uid) != seen_uids.end())
+            return false;
+        seen_uids[uid] = 1;
+        if (uid == my_uid)
+            my_index = it - members.abegin();
+        it->erase("prepared");
+        it->erase("confirmed");
+        it->erase("statusat");
+        /*else if (!it->get("addr").is_string()
+          || !it->get("port").is_int()
+          || it->get("port").to_i() <= 0
+                 || it->get("port").to_i() > 65535)
+                 return false;*/
+    }
+
+    return true;
+}
+
+Json& Vrgroup::view_type::find(const String& uid) {
+    static Json thenull;
+    for (int i = 0; i != members.size(); ++i)
+        if (members[i].get("uid") == uid)
+            return members[i];
+    return thenull;
+}
+
+inline String Vrgroup::view_type::primary_uid() const {
+    return members[primary_index]["uid"].to_s();
+}
+
+bool Vrgroup::view_type::operator==(const view_type& x) const {
+    if (viewno != x.viewno
+        || primary_index != x.primary_index
+        || my_index != x.my_index
+        || members.size() != x.members.size())
+        return false;
+    for (int i = 0; i != members.size(); ++i)
+        if (members[i]["uid"] != x.members[i]["uid"])
+            return false;
+    return true;
+}
+
+bool Vrgroup::view_type::shared_quorum(const view_type& x) const {
+    int nshared = 0;
+    for (auto it = members.abegin(); it != members.aend(); ++it)
+        if (x.find(it->get("uid").to_s()))
+            ++nshared;
+    return nshared > members.size() / 2 && nshared > x.members.size() / 2;
+}
+
+
 Vrgroup::Vrgroup(const String& group_name, Vrendpoint* me)
     : group_name_(group_name), me_(me), commitno_(0), new_view_count_(0) {
-    view_.viewno = 0;
-    view_.primary_index = 0;
     if (me_) {
-        view_.members = Json::array(Json::object("uid", me->uid()));
-        view_.my_index = 0;
+        cur_view_.members = Json::array(Json::object("uid", me->uid()));
+        cur_view_.my_index = 0;
         endpoints_[me->uid()] = me;
         listen_loop();
-    } else {
-        view_.members = Json::array();
-        view_.my_index = -1;
     }
+    next_view_ = cur_view_;
 }
 
 void Vrgroup::dump(std::ostream& out) const {
@@ -68,11 +141,11 @@ void Vrgroup::dump(std::ostream& out) const {
 
 String Vrgroup::unparse_view_state() const {
     StringAccum sa;
-    sa << "v#" << view_.viewno
-       << (view_.primary_index == view_.my_index ? "p" : "");
+    sa << "v#" << cur_view_.viewno
+       << (cur_view_.primary_index == cur_view_.my_index ? "p" : "");
     if (new_view_count_)
-        sa << "<v#" << new_view_.viewno
-           << (new_view_.primary_index == new_view_.my_index ? "p" : "")
+        sa << "<v#" << next_view_.viewno
+           << (next_view_.primary_index == next_view_.my_index ? "p" : "")
            << ":" << new_view_count_ << "." << new_view_confirmed_ << ">";
     return sa.take_string();
 }
@@ -102,7 +175,7 @@ tamed void Vrgroup::connect(Json peer_name, event<Vrendpoint*> done) {
             delete endpoints_[peer->uid()];
         endpoints_[peer->uid()] = peer;
 
-        view_type v = new_view_count_ ? new_view_ : view_;
+        view_type v = new_view_count_ ? next_view_ : cur_view_;
         auto it = v.members.abegin();
         while (it != v.members.aend() && (*it)["uid"].to_s() < peer->uid())
             ++it;
@@ -138,80 +211,78 @@ tamed void Vrgroup::interconnect_loop(Vrendpoint* peer) {
     }
 }
 
-bool Vrgroup::check_view_members(const Json& j) const {
-    if (!j.is_array())
-        return false;
-    std::unordered_map<String, int> seen_uids;
-    bool contains_me;
-    for (auto it = j.abegin(); it != j.aend(); ++it) {
-        if (!it->is_object()
-            || !it->get("uid").is_string()
-            || seen_uids.find(it->get("uid").to_s()) != seen_uids.end())
-            return false;
-        String uid = it->get("uid").to_s();
-        seen_uids[uid] = 1;
-        if (uid == this->uid())
-            contains_me = true;
-        /*else if (!it->get("addr").is_string()
-                 || !it->get("port").is_int()
-                 || it->get("port").to_i() <= 0
-                 || it->get("port").to_i() > 65535)
-                 return false;*/
+Vrendpoint* Vrgroup::primary(const view_type& v) const {
+    if ((unsigned) v.primary_index < (unsigned) v.members.size())
+        return endpoints_[v.members[v.primary_index].get("uid").to_s()];
+    else
+        return nullptr;
+}
+
+void Vrgroup::process_view_status(Vrendpoint* who, const Json& msg) {
+    Json payload = msg[2];
+    view_type v;
+    if (!v.assign(payload, me_->uid())
+        || !v.find(who->uid())) {
+    error:
+        who->send(Json::array((int) m_vri_error, -msg[1]));
+        return;
     }
-    if (me_ && !contains_me)
-        return false;
-    return true;
-}
 
-bool Vrgroup::view_members_equal(const Json& a, const Json& b) {
-    if (a.size() != b.size())
-        return false;
-    for (int i = 0; i != a.size(); ++i)
-        if (a[i]["uid"] != b[i]["uid"])
-            return false;
-    return true;
-}
-
-Json Vrgroup::filter_view_members(Json j) const {
-    for (auto it = j.abegin(); it != j.aend(); ++it) {
-        it->erase("gotstatus");
-        it->erase("gotconfirm");
-        it->erase("statusat");
+    viewnumberdiff_t vdiff = (viewnumberdiff_t) (v.viewno - next_view_.viewno);
+    if (vdiff < 0
+        || (vdiff == 0 && v != next_view_)
+        || !next_view_.shared_quorum(v))
+        send_view_status(who);
+    else if (vdiff == 0 && cur_view_.viewno == next_view_.viewno)
+        /* send nothing */;
+    else if (vdiff == 0) {
+        Json& remote = next_view_.find(who->uid());
+        if (!remote["prepared"]) {
+            remote["prepared"] = true;
+            ++next_view_prepared_;
+        }
+        if (payload["confirm"]
+            && !remote["confirmed"]) {
+            remote["confirmed"] = true;
+            ++next_view_confirmed_;
+        }
+        if (!payload["ackprepare"])
+            send_view_status(who);
+    } else {
+        // start new view
+        next_view_prepared_ = 2;
+        next_view_confirmed_ = v.my_index == v.primary_index;
+        next_view_sent_confirm_ = v.my_index == v.primary_index;
+        next_view_ = v;
+        next_view_.find(who->uid()).set("prepared", 1);
+        broadcast_view_status();
     }
-    return j;
-}
 
-inline Json& Vrgroup::view_type::find(const String& uid) {
-    static Json thenull;
-    for (int i = 0; i != members.size(); ++i)
-        if (members[i].get("uid") == uid)
-            return members[i];
-    return thenull;
-}
-
-void Vrgroup::view_type::set_me(const String& uid) {
-    my_index = -1;
-    for (int i = 0; i != members.size(); ++i)
-        if (members[i].get("uid") == uid)
-            my_index = i;
-}
-
-inline String Vrgroup::view_type::primary_uid() const {
-    return members[primary_index]["uid"].to_s();
+    if (next_view_prepared_ > next_view_.members.size() / 2
+        && !next_view_sent_confirm_) {
+        send_view_status(primary());
+        next_view_sent_confirm_ = true;
+    }
+    if (next_view_confirmed_ == next_view_.members.size()
+        && next_view_.my_index == next_view_.primary_index) {
+        broadcast_view_adopted();
+        next_view_prepared_ = next_view_confirmed_ = 0;
+    }
 }
 
 void Vrgroup::send_view_status(Vrendpoint* who, bool status) {
-    view_type& v = (new_view_count_ ? new_view_ : view_);
-    Json& found = v.find(who->uid());
-    if (found && found["statusat"]
+    Json payload = Json::object("viewno", next_view_.viewno,
+                                "members", next_view_.members,
+                                "primary", next_view_.primary_index);
+    Json& found = next_view_.find(who->uid());
+    if (found && found["prepared"])
+        payload["ackprepare"] = true;
+    if (next_view_prepared_ > next_view_.members.size() / 2)
+        payload["confirm"] = true;
         && found["statusat"].to_d() >= tamer::drecent() - 3)
         return;
     else if (found)
         found["statusat"] = tamer::drecent();
-    Json j = Json::object("viewno", v.viewno,
-                          "members", v.members,
-                          "primary", v.primary_index,
-                          "status", status);
     if (new_view_count_)
         j.set("flux", true);
     who->send(Json::array((int) m_vri_view_status, Json::null, j));
@@ -229,66 +300,6 @@ void Vrgroup::broadcast_view_status() {
     for (auto it = new_view_.members.abegin();
          it != new_view_.members.aend(); ++it)
         send_view_status(*it, true);
-}
-
-void Vrgroup::process_view_status(Vrendpoint* who, const Json& msg) {
-    Json payload = msg[2];
-    if (!payload.is_o()
-        || !check_view_members(payload.get("members"))
-        || !payload.get("viewno").is_i()
-        || !payload.get("primary").is_i()
-        || payload.get("primary").to_i() < 0
-        || payload.get("primary").to_i() >= payload.get("members").size()) {
-    error:
-        who->send(Json::array((int) m_vri_error, -msg[1]));
-        return;
-    }
-
-    view_type v;
-    v.viewno = payload.get("viewno").to_u64();
-    v.members = filter_view_members(payload.get("members"));
-    v.primary_index = payload.get("primary").to_i();
-    v.set_me(me_->uid());
-    if (!v.find(who->uid()))    // view must include sender
-        goto error;
-
-    if (v.viewno < view_.viewno
-        || (new_view_count_ && v.viewno < new_view_.viewno))
-        send_view_status(who, false);
-    else if (v.viewno == view_.viewno)
-        send_view_status(who, view_members_equal(v.members, view_.members)
-                         && v.primary_index == view_.primary_index);
-    else if (!new_view_count_
-             || v.viewno > new_view_.viewno) {
-        new_view_count_ = 1;
-        new_view_confirmed_ = 0;
-        new_view_ = v;
-        Json& sender = new_view_.find(who->uid());
-        if (!sender["gotstatus"]) {
-            ++new_view_count_;
-            sender["gotstatus"] = true;
-        }
-        broadcast_view_status();
-    } else if (view_members_equal(v.members, new_view_.members)
-               && v.primary_index == new_view_.primary_index) {
-        Json& sender = new_view_.find(who->uid());
-        if (!sender["gotstatus"]) {
-            ++new_view_count_;
-            sender["gotstatus"] = true;
-        }
-        send_view_status(who, true);
-    } else
-        send_view_status(who, false);
-
-    if (new_view_count_ > new_view_.members.size() / 2)
-        start_view_confirm();
-}
-
-Vrendpoint* Vrgroup::primary(const view_type& v) const {
-    if ((unsigned) v.primary_index < (unsigned) v.members.size())
-        return endpoints_[v.members[v.primary_index].get("uid").to_s()];
-    else
-        return nullptr;
 }
 
 void Vrgroup::start_view_confirm() {
