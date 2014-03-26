@@ -9,6 +9,7 @@
 /conftest.*
 /jsontest
 /mprpc
+/mpvr
 /msgpacktest
 /stamp-h
 *~

@@ -17,7 +17,7 @@ LIBS = $(LIBTAMER) `$(TAMER) -l` @LIBS@ -lpthread -lm
 LDFLAGS = @LDFLAGS@
 
 TAMEDDIR = $(DEPSDIR)
-TAMER_COMMIT = 3715b44202b7366f4716cabc295c494b299fa05b
+TAMER_COMMIT = 1f329e2549c10dbf930f46c6c31d1ecb678a20bb
 
 CXXCOMPILE = $(CXX) $(DEFS) $(CPPFLAGS) $(CXXFLAGS)
 CXXLINK = $(CXX) $(CXXFLAGS)
@@ -27,7 +27,7 @@ TAMERFLAGS = @TAMERFLAGS@
 LIBTAMER = tamer/tamer/.libs/libtamer.a
 
 
-all: mprpc msgpacktest jsontest
+all: mpvr mprpc msgpacktest jsontest
 
 %.o: %.c config.h $(DEPSDIR)/stamp
 	$(CXXCOMPILE) $(DEPCFLAGS) -include config.h -c -o $@ $<
@@ -46,6 +46,9 @@ $(TAMEDDIR)/%.hh: %.thh config.h $(DEPSDIR)/stamp $(TAMER)
 
 %.S: %.o
 	objdump -S $< > $@
+
+mpvr: mpvr.o mpfd.o string.o straccum.o json.o compiler.o msgpack.o clp.o $(LIBTAMER)
+	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 
 mprpc: mprpc.o mpfd.o string.o straccum.o json.o compiler.o msgpack.o clp.o $(LIBTAMER)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
@@ -88,14 +91,15 @@ clean:
 	rm -f mtd mtclient mttest test_string test_atomics *.o libjson.a
 	rm -rf .deps
 
-# tamer dependencies
-mpfd.o: $(TAMEDDIR)/mpfd.hh $(TAMEDDIR)/mpfd.cc
-mprpc.o: $(TAMEDDIR)/mpfd.hh $(TAMEDDIR)/mprpc.cc
-
 DEPFILES := $(wildcard $(DEPSDIR)/*.d)
 ifneq ($(DEPFILES),)
 include $(DEPFILES)
 endif
+
+# tamer dependencies
+mpfd.o: $(TAMEDDIR)/mpfd.hh $(TAMEDDIR)/mpfd.cc
+mprpc.o: $(TAMEDDIR)/mpfd.hh $(TAMEDDIR)/mprpc.cc
+mpvr.o: $(TAMEDDIR)/mpvr.cc $(TAMEDDIR)/mpvr.hh $(TAMEDDIR)/mpfd.hh
 
 always:
 	@:
