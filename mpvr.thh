@@ -40,6 +40,9 @@ class Vrendpoint {
 
 class Vrgroup {
   public:
+    typedef unsigned viewnumber_t;
+    typedef int viewnumberdiff_t;
+
     Vrgroup(const String& group_name, Vrendpoint* me);
 
     String group_name() const {
@@ -48,8 +51,8 @@ class Vrgroup {
     String uid() const {
         return me_ ? me_->uid() : String();
     }
-    size_t view_number() const {
-        return view_.viewno;
+    viewnumber_t view_number() const {
+        return cur_view_.viewno;
     }
     size_t commit_number() const {
         return commitno_;
@@ -64,7 +67,8 @@ class Vrgroup {
         return tamer::add_timeout(3, std::move(done));
     }
 
-    tamed void connect(Json peer, event<Vrendpoint*> done);
+    tamed void connect(Json peer_name, event<Vrendpoint*> done);
+    tamed void join(Json peer_name, event<Vrendpoint*> done);
 
     void dump(std::ostream&) const;
 
@@ -72,16 +76,30 @@ class Vrgroup {
     String group_name_;
 
     struct view_type {
-        size_t viewno;
+        viewnumber_t viewno;
         Json members;
         int primary_index;
         int my_index;
-        void set_me(const String& uid);
-        inline Json& find(const String& uid);
+        int nacked;
+        int nconfirmed;
+
+        view_type();
+        bool assign(Json msg, const String& my_uid);
+        inline Json operator[](const String& uid) const;
         inline String primary_uid() const;
+        bool operator==(const view_type& x) const;
+        bool operator!=(const view_type& x) const { return !(*this == x); }
+        bool shared_quorum(const view_type& x) const;
+        void prepare(Vrendpoint* ep, const Json& payload);
+        void clear_preparation();
+        void add(Json peer_name, const String& my_uid);
+
+        void set_me(const String& uid);
     };
 
-    view_type view_;
+    view_type cur_view_;
+    view_type next_view_;
+    bool want_member_;
 
     Vrendpoint* me_;
     mutable std::unordered_map<String, Vrendpoint*> endpoints_;
@@ -89,25 +107,16 @@ class Vrgroup {
     size_t commitno_;
     std::deque<Json> log_;
 
-    int new_view_count_;
-    int new_view_confirmed_;
-    view_type new_view_;
+    bool next_view_sent_confirm_;
 
-    bool check_view_members(const Json& vj) const;
-    Json filter_view_members(Json vj) const;
-    static bool view_members_equal(const Json& a, const Json& b);
     Vrendpoint* primary(const view_type& v) const;
     String unparse_view_state() const;
 
-    void send_view_status(Vrendpoint* who, bool status);
-    tamed void send_view_status(Json peer_name, bool status);
-    void broadcast_view_status();
-    void process_view_status(Vrendpoint* who, const Json& msg);
-    void start_view_confirm();
-    void process_view_confirm(Vrendpoint* who, const Json& msg);
-    void start_view_adopt();
-    tamed void send_view_adopt(Json peer_name, size_t viewno);
-    void process_view_adopt(Vrendpoint* who, const Json& msg);
+    Json view_payload(const Json& peer);
+    void send_view(Vrendpoint* who, Json payload = Json());
+    tamed void send_view(Json peer);
+    void broadcast_view();
+    void process_view(Vrendpoint* who, const Json& msg);
 
     tamed void listen_loop();
     tamed void interconnect_loop(Vrendpoint*);
