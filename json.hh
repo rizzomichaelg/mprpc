@@ -132,7 +132,8 @@ class Json {
     void clear();
 
     // Primitive extractors
-    inline long to_i() const;
+    inline int64_t to_i() const;
+    inline uint64_t to_u() const;
     inline uint64_t to_u64() const;
     inline bool to_i(int& x) const;
     inline bool to_i(unsigned& x) const;
@@ -140,10 +141,10 @@ class Json {
     inline bool to_i(unsigned long& x) const;
     inline bool to_i(long long& x) const;
     inline bool to_i(unsigned long long& x) const;
-    inline long as_i() const;
-    inline long as_i(long default_value) const;
-    inline unsigned long as_u() const;
-    inline unsigned long as_u(unsigned long default_value) const;
+    inline int64_t as_i() const;
+    inline int64_t as_i(int64_t default_value) const;
+    inline uint64_t as_u() const;
+    inline uint64_t as_u(uint64_t default_value) const;
 
     inline double to_d() const;
     inline bool to_d(double& x) const;
@@ -374,8 +375,8 @@ class Json {
     inline ObjectJson* ojson() const;
     inline ArrayJson* ajson() const;
 
-    long hard_to_i() const;
-    uint64_t hard_to_u64() const;
+    int64_t hard_to_i() const;
+    uint64_t hard_to_u() const;
     double hard_to_d() const;
     bool hard_to_b() const;
     String hard_to_s() const;
@@ -930,8 +931,11 @@ class Json_proxy_base {
     Json::size_type size() const {
 	return cvalue().size();
     }
-    long to_i() const {
+    int64_t to_i() const {
 	return cvalue().to_i();
+    }
+    uint64_t to_u() const {
+        return cvalue().to_u();
     }
     uint64_t to_u64() const {
 	return cvalue().to_u64();
@@ -954,16 +958,16 @@ class Json_proxy_base {
     bool to_i(unsigned long long& x) const {
 	return cvalue().to_i(x);
     }
-    long as_i() const {
+    int64_t as_i() const {
 	return cvalue().as_i();
     }
-    long as_i(long default_value) const {
+    int64_t as_i(int64_t default_value) const {
 	return cvalue().as_i(default_value);
     }
-    unsigned long as_u() const {
+    uint64_t as_u() const {
 	return cvalue().as_u();
     }
-    unsigned long as_u(unsigned long default_value) const {
+    uint64_t as_u(uint64_t default_value) const {
 	return cvalue().as_u(default_value);
     }
     double to_d() const {
@@ -1727,11 +1731,18 @@ inline bool Json::shared() const {
     boolean Jsons to 1; string Jsons to a number parsed from their initial
     portions; and array and object Jsons to size().
     @sa as_i() */
-inline long Json::to_i() const {
+inline int64_t Json::to_i() const {
     if (is_int())
 	return u_.i.x;
     else
 	return hard_to_i();
+}
+
+inline uint64_t Json::to_u() const {
+    if (is_int())
+	return u_.u.x;
+    else
+	return hard_to_u();
 }
 
 /** @brief Extract this integer Json's value into @a x.
@@ -1740,7 +1751,7 @@ inline long Json::to_i() const {
 
     If false is returned (!is_number() or the number is not parseable as a
     pure integer), @a x remains unchanged. */
-inline bool Json::to_i(int &x) const {
+inline bool Json::to_i(int& x) const {
     if (is_int()) {
         x = u_.i.x;
         return true;
@@ -1815,22 +1826,19 @@ inline bool Json::to_i(unsigned long long& x) const {
 
     See to_i() for the conversion rules. */
 inline uint64_t Json::to_u64() const {
-    if (is_int())
-	return u_.i.x;
-    else
-	return hard_to_u64();
+    return to_u();
 }
 
 /** @brief Return the integer value of this numeric Json.
     @pre is_number()
     @sa to_i() */
-inline long Json::as_i() const {
+inline int64_t Json::as_i() const {
     precondition(is_int() || is_double());
-    return is_int() ? u_.i.x : long(u_.d.x);
+    return is_int() ? u_.i.x : int64_t(u_.d.x);
 }
 
 /** @brief Return the integer value of this numeric Json or @a default_value. */
-inline long Json::as_i(long default_value) const {
+inline int64_t Json::as_i(int64_t default_value) const {
     if (is_int() || is_double())
         return as_i();
     else
@@ -1840,13 +1848,13 @@ inline long Json::as_i(long default_value) const {
 /** @brief Return the unsigned integer value of this numeric Json.
     @pre is_number()
     @sa to_i() */
-inline unsigned long Json::as_u() const {
+inline uint64_t Json::as_u() const {
     precondition(is_int() || is_double());
-    return is_int() ? u_.u.x : (unsigned long) (u_.d.x);
+    return is_int() ? u_.u.x : uint64_t(u_.d.x);
 }
 
 /** @brief Return the integer value of this numeric Json or @a default_value. */
-inline unsigned long Json::as_u(unsigned long default_value) const {
+inline uint64_t Json::as_u(uint64_t default_value) const {
     if (is_int() || is_double())
         return as_u();
     else

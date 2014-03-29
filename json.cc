@@ -374,7 +374,7 @@ void Json::resize(size_type n) {
 
 // Primitives
 
-long Json::hard_to_i() const {
+int64_t Json::hard_to_i() const {
     switch (u_.x.type) {
     case j_array:
     case j_object:
@@ -383,7 +383,7 @@ long Json::hard_to_i() const {
     case j_int:
         return u_.i.x;
     case j_double:
-        return long(u_.d.x);
+        return int64_t(u_.d.x);
     case j_null:
     case j_string:
     default:
@@ -392,7 +392,11 @@ long Json::hard_to_i() const {
         invariant(u_.x.type <= 0);
 	const char *b = reinterpret_cast<const String&>(u_.str).c_str();
 	char *s;
-	long x = strtol(b, &s, 0);
+#if SIZEOF_LONG >= 8
+        long x = strtol(b, &s, 0);
+#else
+        long long x = strtoll(b, &s, 0);
+#endif
 	if (s == b + u_.str.length)
 	    return x;
 	else
@@ -400,7 +404,7 @@ long Json::hard_to_i() const {
     }
 }
 
-uint64_t Json::hard_to_u64() const {
+uint64_t Json::hard_to_u() const {
     switch (u_.x.type) {
     case j_array:
     case j_object:
