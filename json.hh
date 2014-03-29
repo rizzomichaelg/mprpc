@@ -43,7 +43,8 @@ template <typename T> struct Json_rep_item<T, 8> {
 class Json {
     enum json_type { // order matters
         j_string = -1, j_null = 0,
-        j_array = 1, j_object = 2, j_int = 3, j_double = 4, j_bool = 5
+        j_array = 1, j_object = 2,
+        j_int = 3, j_unsigned = 4, j_double = 5, j_bool = 6
     };
 
   public:
@@ -112,6 +113,8 @@ class Json {
     inline bool is_null() const;
     inline bool is_int() const;
     inline bool is_i() const;
+    inline bool is_unsigned() const;
+    inline bool is_u() const;
     inline bool is_double() const;
     inline bool is_d() const;
     inline bool is_number() const;
@@ -890,6 +893,12 @@ class Json_proxy_base {
     bool is_i() const {
 	return cvalue().is_i();
     }
+    bool is_unsigned() const {
+	return cvalue().is_unsigned();
+    }
+    bool is_u() const {
+	return cvalue().is_u();
+    }
     bool is_double() const {
 	return cvalue().is_double();
     }
@@ -1502,7 +1511,7 @@ inline Json::Json(int x) {
 }
 inline Json::Json(unsigned x) {
     u_.u.x = x;
-    u_.u.type = j_int;
+    u_.u.type = j_unsigned;
 }
 inline Json::Json(long x) {
     u_.i.x = x;
@@ -1510,7 +1519,7 @@ inline Json::Json(long x) {
 }
 inline Json::Json(unsigned long x) {
     u_.u.x = x;
-    u_.u.type = j_int;
+    u_.u.type = j_unsigned;
 }
 inline Json::Json(long long x) {
     u_.i.x = x;
@@ -1518,7 +1527,7 @@ inline Json::Json(long long x) {
 }
 inline Json::Json(unsigned long long x) {
     u_.u.x = x;
-    u_.u.type = j_int;
+    u_.u.type = j_unsigned;
 }
 inline Json::Json(double x) {
     u_.d.x = x;
@@ -1666,46 +1675,53 @@ inline bool Json::is_null() const {
     return !u_.x.x && u_.x.type == j_null;
 }
 inline bool Json::is_int() const {
-    return u_.x.type == j_int;
+    return unsigned(u_.x.type - j_int) <= unsigned(j_unsigned - j_int);
 }
 inline bool Json::is_i() const {
-    return u_.x.type == j_int;
+    return is_int();
+}
+inline bool Json::is_unsigned() const {
+    return u_.x.type == j_unsigned
+        || (u_.x.type == j_int && u_.i.x >= 0);
+}
+inline bool Json::is_u() const {
+    return is_unsigned();
 }
 inline bool Json::is_double() const {
     return u_.x.type == j_double;
 }
 inline bool Json::is_d() const {
-    return u_.x.type == j_double;
+    return is_double();
 }
 inline bool Json::is_number() const {
-    return is_int() || is_double();
+    return unsigned(u_.x.type - j_int) <= unsigned(j_double - j_int);
 }
 inline bool Json::is_n() const {
-    return is_int() || is_double();
+    return is_number();
 }
 inline bool Json::is_bool() const {
     return u_.x.type == j_bool;
 }
 inline bool Json::is_b() const {
-    return u_.x.type == j_bool;
+    return is_bool();
 }
 inline bool Json::is_string() const {
     return u_.x.x && u_.x.type <= 0;
 }
 inline bool Json::is_s() const {
-    return u_.x.x && u_.x.type <= 0;
+    return is_string();
 }
 inline bool Json::is_array() const {
     return u_.x.type == j_array;
 }
 inline bool Json::is_a() const {
-    return u_.x.type == j_array;
+    return is_array();
 }
 inline bool Json::is_object() const {
     return u_.x.type == j_object;
 }
 inline bool Json::is_o() const {
-    return u_.x.type == j_object;
+    return is_object();
 }
 /** @brief Test if this Json is a primitive value, not including null. */
 inline bool Json::is_primitive() const {
@@ -1901,7 +1917,12 @@ inline bool Json::to_d(double& x) const {
     @sa to_d() */
 inline double Json::as_d() const {
     precondition(is_double() || is_int());
-    return is_double() ? u_.d.x : double(u_.i.x);
+    if (is_double())
+        return u_.d.x;
+    else if (u_.x.type == j_int)
+        return u_.i.x;
+    else
+        return u_.u.x;
 }
 
 /** @brief Return the double value of this numeric Json or @a default_value. */
@@ -2023,6 +2044,9 @@ inline void Json::force_double() {
 	u_.x.type = j_double;
     else if (u_.x.type == j_int) {
         u_.d.x = u_.i.x;
+        u_.d.type = j_double;
+    } else if (u_.x.type == j_unsigned) {
+        u_.d.x = u_.u.x;
         u_.d.type = j_double;
     }
 }
@@ -2914,7 +2938,7 @@ inline Json& Json::operator=(int x) {
 inline Json& Json::operator=(unsigned x) {
     deref();
     u_.u.x = x;
-    u_.u.type = j_int;
+    u_.u.type = j_unsigned;
     return *this;
 }
 
@@ -2928,7 +2952,7 @@ inline Json& Json::operator=(long x) {
 inline Json& Json::operator=(unsigned long x) {
     deref();
     u_.u.x = x;
-    u_.u.type = j_int;
+    u_.u.type = j_unsigned;
     return *this;
 }
 
@@ -2942,7 +2966,7 @@ inline Json& Json::operator=(long long x) {
 inline Json& Json::operator=(unsigned long long x) {
     deref();
     u_.u.x = x;
-    u_.u.type = j_int;
+    u_.u.type = j_unsigned;
     return *this;
 }
 
@@ -2988,8 +3012,8 @@ inline Json& Json::add(double x) {
 template <typename T>
 inline Json& Json::add(T x) {
     force_number();
-    if (u_.x.type == j_int)
-        u_.i.x += x;
+    if (is_int())
+        u_.u.x += x;
     else
         u_.d.x += x;
     return *this;
@@ -3002,8 +3026,8 @@ inline Json& Json::subtract(double x) {
 template <typename T>
 inline Json& Json::subtract(T x) {
     force_number();
-    if (u_.x.type == j_int)
-        u_.i.x -= x;
+    if (is_int())
+        u_.u.x -= x;
     else
         u_.d.x -= x;
     return *this;
@@ -3074,8 +3098,8 @@ inline Json operator+(Json x) {
 }
 inline Json operator-(Json x) {
     x.force_number();
-    if (x.u_.x.type == Json::j_int)
-        x.u_.i.x = -x.u_.i.x;
+    if (x.is_int())
+        x.u_.u.x = -x.u_.u.x;
     else
         x.u_.d.x = -x.u_.d.x;
     return x;

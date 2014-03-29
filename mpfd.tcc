@@ -94,7 +94,7 @@ void msgpack_fd::write(const Json& j, bool iscall) {
     // serialize Json to w->sa
     msgpack::unparser<StringAccum> mu(w->sa);
     if (iscall && j[1].is_null()) { // assign sequence number
-        mu << msgpack::array_marker(std::max(j.size(), 2)) << j[0]
+        mu << msgpack::array(std::max(j.size(), 2)) << j[0]
            << (rdreply_seq_ + rdreplywait_.size());
         for (int i = 2; i < j.size(); ++i)
             mu << j[i];

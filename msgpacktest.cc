@@ -72,6 +72,7 @@ void check_correctness() {
     TEST("\xDC\x00\x00     ", 5, 3, "[]");
     TEST("\224\002\322\000\001\242\321\262p|00356|1000000000\245?!?#*\225\001\322\000\001\242\322\242t|\242t}\332\000Rt|<user_id:5>|<time:10>|<poster_id:5> s|<user_id>|<poster_id> p|<poster_id>|<time>",
          130, 32, "[2,107217,\"p|00356|1000000000\",\"?!?#*\"]", status_ok);
+    TEST("\xCF\x80\0\0\0\0\0\0\0", 9, 9, "9223372036854775808");
 
     {
         msgpack::streaming_parser a;
@@ -110,6 +111,17 @@ void check_correctness() {
         assert(sa.take_string() == String("\xD1\x80\x00", 3));
         up << -32769;
         assert(sa.take_string() == String("\xD2\xFF\xFF\x7F\xFF", 5));
+    }
+
+    {
+        StringAccum sa;
+        msgpack::unparser<StringAccum> up(sa);
+        up.clear();
+        up << msgpack::array(2) << Json((uint64_t) 1 << 63)
+           << Json((int64_t) 1 << 63);
+        String result = sa.take_string();
+        TEST(result.c_str(), result.length(), result.length(),
+             "[9223372036854775808,-9223372036854775808]");
     }
 
     std::cout << "All tests pass!\n";

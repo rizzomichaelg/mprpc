@@ -382,6 +382,8 @@ int64_t Json::hard_to_i() const {
     case j_bool:
     case j_int:
         return u_.i.x;
+    case j_unsigned:
+        return u_.u.x;
     case j_double:
         return int64_t(u_.d.x);
     case j_null:
@@ -412,6 +414,8 @@ uint64_t Json::hard_to_u() const {
     case j_bool:
     case j_int:
 	return u_.i.x;
+    case j_unsigned:
+        return u_.u.x;
     case j_double:
         return uint64_t(u_.d.x);
     case j_null:
@@ -441,6 +445,8 @@ double Json::hard_to_d() const {
     case j_bool:
     case j_int:
 	return u_.i.x;
+    case j_unsigned:
+        return u_.u.x;
     case j_double:
         return u_.d.x;
     case j_null:
@@ -460,7 +466,8 @@ bool Json::hard_to_b() const {
 	return !empty();
     case j_bool:
     case j_int:
-	return u_.i.x;
+    case j_unsigned:
+	return u_.i.x != 0;
     case j_double:
 	return u_.d.x;
     case j_null:
@@ -480,6 +487,8 @@ String Json::hard_to_s() const {
         return String(bool(u_.i.x));
     case j_int:
         return String(u_.i.x);
+    case j_unsigned:
+        return String(u_.u.x);
     case j_double:
         return String(u_.d.x);
     case j_null:
@@ -526,7 +535,9 @@ Json& Json::hard_get_insert(size_type x) {
 bool operator==(const Json& a, const Json& b) {
     if ((a.u_.x.type > 0 || b.u_.x.type > 0) && a.u_.x.type != b.u_.x.type)
         return false;
-    else if (a.u_.x.type == Json::j_int || a.u_.x.type == Json::j_bool)
+    else if (a.u_.x.type == Json::j_int
+             || a.u_.x.type == Json::j_unsigned
+             || a.u_.x.type == Json::j_bool)
         return a.u_.u.x == b.u_.u.x;
     else if (a.u_.x.type == Json::j_double)
         return a.u_.d.x == b.u_.d.x;
@@ -632,6 +643,8 @@ void Json::hard_unparse(StringAccum &sa, const unparse_manipulator &m, int depth
         sa.append(&"false\0true"[-b & 6], 5 - b);
     } else if (u_.x.type == j_int)
         sa << u_.i.x;
+    else if (u_.x.type == j_unsigned)
+        sa << u_.u.x;
     else if (u_.x.type == j_double)
         sa << u_.d.x;
 

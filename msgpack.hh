@@ -200,12 +200,27 @@ inline char* write_map_header(char* s, uint32_t size) {
 }
 } // namespace format
 
-struct array_marker {
+struct array_t {
     uint32_t size;
-    array_marker(uint32_t s)
+    array_t(uint32_t s)
         : size(s) {
     }
 };
+
+inline array_t array(uint32_t size) {
+    return array_t(size);
+}
+
+struct object_t {
+    uint32_t size;
+    object_t(uint32_t s)
+        : size(s) {
+    }
+};
+
+inline object_t object(uint32_t size) {
+    return object_t(size);
+}
 
 template <typename T>
 class unparser {
@@ -293,7 +308,7 @@ class unparser {
         base_.set_end(format::write_string(s, x.data(), x.length()));
         return *this;
     }
-    inline unparser<T>& operator<<(const array_marker& x) {
+    inline unparser<T>& operator<<(array_t x) {
         char* s = base_.reserve(5);
         base_.set_end(format::write_array_header(s, x.size));
         return *this;
@@ -301,6 +316,11 @@ class unparser {
     inline unparser<T>& write_array_header(uint32_t size) {
         char* s = base_.reserve(5);
         base_.set_end(format::write_array_header(s, size));
+        return *this;
+    }
+    inline unparser<T>& operator<<(object_t x) {
+        char* s = base_.reserve(5);
+        base_.set_end(format::write_map_header(s, x.size));
         return *this;
     }
     unparser<T>& operator<<(const Json& j);
@@ -525,9 +545,12 @@ unparser<T>& unparser<T>::operator<<(const Json& j) {
         base_.append(char(format::fnull));
     else if (j.is_b())
         base_.append(char(format::ffalse + j.as_b()));
-    else if (j.is_i()) {
+    else if (j.is_u()) {
         char* x = base_.reserve(9);
-        base_.set_end(format::write_int(x, (int64_t) j.as_i()));
+        base_.set_end(format::write_int(x, j.as_u()));
+    } else if (j.is_i()) {
+        char* x = base_.reserve(9);
+        base_.set_end(format::write_int(x, j.as_i()));
     } else if (j.is_d()) {
         char* x = base_.reserve(9);
         base_.set_end(format::write_double(x, j.as_d()));

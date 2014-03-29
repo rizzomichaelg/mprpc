@@ -533,6 +533,15 @@ int main(int argc, char** argv) {
         CHECK(it == j.abegin());
     }
 
+    {
+        Json j((uint64_t) 1 << 63);
+        CHECK(j.is_u());
+        CHECK(j.unparse() == "9223372036854775808");
+        j = Json::parse("9223372036854775808");
+        CHECK(j.is_u());
+        CHECK(j.to_u() == (uint64_t) 1 << 63);
+    }
+
     std::cout << "All tests pass!\n";
     return 0;
 }
