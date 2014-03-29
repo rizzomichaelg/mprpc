@@ -105,6 +105,7 @@ class Json {
 
     // Type information
     inline bool truthy() const;
+    inline bool falsy() const;
     inline operator unspecified_bool_type() const;
     inline bool operator!() const;
 
@@ -870,6 +871,9 @@ class Json_proxy_base {
     }
     bool truthy() const {
         return cvalue().truthy();
+    }
+    bool falsy() const {
+        return cvalue().falsy();
     }
     operator Json::unspecified_bool_type() const {
 	return cvalue();
@@ -1642,6 +1646,10 @@ inline Json Json::make_string(const char *s, int len) {
 inline bool Json::truthy() const {
     return (u_.x.x ? u_.x.type >= 0 || u_.str.length
             : (unsigned) (u_.x.type - 1) < (unsigned) (j_int - 1));
+}
+/** @brief Test if this Json is falsy. */
+inline bool Json::falsy() const {
+    return !truthy();
 }
 /** @brief Test if this Json is truthy.
     @sa empty() */
