@@ -75,17 +75,39 @@ class Vrgroup {
   private:
     String group_name_;
 
+    struct view_member {
+        String uid;
+        Json peer_name;
+        bool acked;
+        bool confirmed;
+        explicit view_member(Json peer_name)
+            : uid(peer_name["uid"].to_s()), peer_name(peer_name),
+              acked(false), confirmed(false) {
+        }
+    };
+
     struct view_type {
         viewnumber_t viewno;
-        Json members;
+        std::vector<view_member> members;
         int primary_index;
         int my_index;
-        int nacked;
-        int nconfirmed;
+        unsigned nacked;
+        unsigned nconfirmed;
 
         view_type();
+        static view_type make_singular(Json peer_name);
+
+        inline unsigned size() const {
+            return members.size();
+        }
+        inline unsigned f() const {
+            return size() / 2;
+        }
+        inline int count(const String& uid) const;
+        inline view_member* find_pointer(const String& uid);
+        Json members_json() const;
         bool assign(Json msg, const String& my_uid);
-        inline Json operator[](const String& uid) const;
+        //inline Json operator[](const String& uid) const;
         inline String primary_uid() const;
         bool operator==(const view_type& x) const;
         bool operator!=(const view_type& x) const { return !(*this == x); }
@@ -110,9 +132,16 @@ class Vrgroup {
     bool next_view_sent_confirm_;
 
     Vrendpoint* primary(const view_type& v) const;
+    inline Vrendpoint* primary() const {
+        return primary(cur_view_);
+    }
+    inline bool is_primary() const {
+        return cur_view_.primary_index == cur_view_.my_index;
+    }
+
     String unparse_view_state() const;
 
-    Json view_payload(const Json& peer);
+    Json view_payload(const String& peer_uid);
     void send_view(Vrendpoint* who, Json payload = Json());
     tamed void send_view(Json peer);
     void broadcast_view();
