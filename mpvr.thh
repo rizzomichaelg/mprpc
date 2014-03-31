@@ -22,7 +22,8 @@ class Vrendpoint {
     }
     virtual Json name() const;
 
-    static String make_uid();
+    static String make_client_uid();
+    static String make_replica_uid();
 
     //virtual bool connected() const;
     //virtual void connect(event<bool> done);
@@ -42,6 +43,8 @@ class Vrgroup {
   public:
     typedef unsigned viewnumber_t;
     typedef int viewnumberdiff_t;
+    typedef unsigned lognumber_t;
+    typedef int lognumberdiff_t;
 
     Vrgroup(const String& group_name, Vrendpoint* me);
 
@@ -53,9 +56,6 @@ class Vrgroup {
     }
     viewnumber_t view_number() const {
         return cur_view_.viewno;
-    }
-    size_t commit_number() const {
-        return commitno_;
     }
 
     template <typename T>
@@ -80,9 +80,12 @@ class Vrgroup {
         Json peer_name;
         bool acked;
         bool confirmed;
+        bool has_storeno;
+        lognumber_t storeno;
+        unsigned store_count;
         explicit view_member(Json peer_name)
             : uid(peer_name["uid"].to_s()), peer_name(peer_name),
-              acked(false), confirmed(false) {
+              acked(false), confirmed(false), has_storeno(false) {
         }
     };
 
@@ -106,6 +109,7 @@ class Vrgroup {
         inline int count(const String& uid) const;
         inline view_member* find_pointer(const String& uid);
         Json members_json() const;
+        Json commits_json() const;
         bool assign(Json msg, const String& my_uid);
         //inline Json operator[](const String& uid) const;
         inline String primary_uid() const;
@@ -115,8 +119,8 @@ class Vrgroup {
         void prepare(Vrendpoint* ep, const Json& payload);
         void clear_preparation();
         void add(Json peer_name, const String& my_uid);
-
-        void set_me(const String& uid);
+        void account_commit(view_member* peer, lognumber_t commitno);
+        bool account_all_commits();
     };
 
     view_type cur_view_;
@@ -126,10 +130,37 @@ class Vrgroup {
     Vrendpoint* me_;
     mutable std::unordered_map<String, Vrendpoint*> endpoints_;
 
-    size_t commitno_;
-    std::deque<Json> log_;
+    struct log_item {
+        viewnumber_t viewno;
+        String client_uid;
+        unsigned client_seqno;
+        Json request;
+        log_item() {
+        }
+        log_item(viewnumber_t v, String cuid, unsigned cseqno, Json req)
+            : viewno(v), client_uid(std::move(cuid)), client_seqno(cseqno),
+              request(std::move(req)) {
+        }
+    };
+
+    lognumber_t first_logno_;
+    lognumber_t commitno_;
+    std::deque<log_item> log_;
 
     bool next_view_sent_confirm_;
+
+    static inline bool logno_less(lognumber_t a, lognumber_t b) {
+        return (lognumberdiff_t) (a - b) < 0;
+    }
+    static inline bool logno_greater(lognumber_t a, lognumber_t b) {
+        return (lognumberdiff_t) (a - b) > 0;
+    }
+    static inline bool viewno_less(viewnumber_t a, viewnumber_t b) {
+        return (viewnumberdiff_t) (a - b) < 0;
+    }
+    static inline bool viewno_greater(viewnumber_t a, viewnumber_t b) {
+        return (viewnumberdiff_t) (a - b) > 0;
+    }
 
     Vrendpoint* primary(const view_type& v) const;
     inline Vrendpoint* primary() const {
@@ -142,10 +173,16 @@ class Vrgroup {
     String unparse_view_state() const;
 
     Json view_payload(const String& peer_uid);
-    void send_view(Vrendpoint* who, Json payload = Json());
+    void send_view(Vrendpoint* who, Json payload = Json(), Json seqno = Json());
     tamed void send_view(Json peer);
     void broadcast_view();
     void process_view(Vrendpoint* who, const Json& msg);
+    void process_request(Vrendpoint* who, const Json& msg);
+    void process_replicate(Vrendpoint* who, const Json& msg);
+    void process_commit(Vrendpoint* who, const Json& msg);
+    void update_commitno(lognumber_t commitno);
+    tamed void send_peer(Json peer_name, Json msg);
+    void broadcast_peers(Json msg);
 
     tamed void listen_loop();
     tamed void interconnect_loop(Vrendpoint*);
