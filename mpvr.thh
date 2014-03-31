@@ -177,6 +177,10 @@ class Vrgroup {
     inline bool is_primary() const {
         return cur_view_.primary_index == cur_view_.my_index;
     }
+    inline bool between_views() const {
+        return cur_view_.viewno != next_view_.viewno
+            && next_view_sent_confirm_;
+    }
 
     String unparse_view_state() const;
 

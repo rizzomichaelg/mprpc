@@ -472,7 +472,7 @@ void Vrgroup::broadcast_view() {
 void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
     if (msg.size() < 4 || !msg[2].is_i())
         who->send(Json::array(0, msg[1], false));
-    else if (!is_primary())
+    else if (!is_primary() || between_views())
         send_view(who, Json(), msg[1]);
     else {
         Json commit = Json::array((int) m_vri_commit,
@@ -515,7 +515,9 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
     view_member* peer = nullptr;
     if (msg.size() < 4
         || (msg.size() > 5 && (msg.size() - 5) % 3 != 0)
-        || !msg[2].is_u() || msg[2].to_u() != cur_view_.viewno
+        || !msg[2].is_u()
+        || msg[2].to_u() != cur_view_.viewno
+        || between_views()
         || !msg[3].is_u()
         || (is_primary()
             && !(peer = cur_view_.find_pointer(who->remote_uid())))) {
