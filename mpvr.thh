@@ -8,19 +8,23 @@ using tamer::event;
 
 class Vrendpoint {
   public:
-    inline Vrendpoint(const String& uid)
-        : uid_(uid), connection_version_(0) {
+    inline Vrendpoint(String local_uid, String remote_uid)
+        : local_uid_(std::move(local_uid)), remote_uid_(std::move(remote_uid)),
+          connection_version_(0) {
     }
     virtual ~Vrendpoint() {
     }
 
-    inline const String& uid() const {
-        return uid_;
+    inline const String& local_uid() const {
+        return local_uid_;
+    }
+    inline const String& remote_uid() const {
+        return remote_uid_;
     }
     inline unsigned connection_version() const {
         return connection_version_;
     }
-    virtual Json name() const;
+    virtual Json local_name() const;
 
     static String make_client_uid();
     static String make_replica_uid();
@@ -33,8 +37,12 @@ class Vrendpoint {
     virtual void send(Json msg);
     virtual void receive(event<Json> done);
 
+    void print_receive(const Json& msg, const String& extra = String());
+    void print_receive(const Json& msg, const Json& extra);
+
   protected:
-    String uid_;
+    String local_uid_;
+    String remote_uid_;
     unsigned connection_version_;
 };
 
@@ -52,7 +60,7 @@ class Vrgroup {
         return group_name_;
     }
     String uid() const {
-        return me_ ? me_->uid() : String();
+        return me_ ? me_->local_uid() : String();
     }
     viewnumber_t view_number() const {
         return cur_view_.viewno;
@@ -116,7 +124,7 @@ class Vrgroup {
         bool operator==(const view_type& x) const;
         bool operator!=(const view_type& x) const { return !(*this == x); }
         bool shared_quorum(const view_type& x) const;
-        void prepare(Vrendpoint* ep, const Json& payload);
+        void prepare(String uid, const Json& payload);
         void clear_preparation();
         void add(Json peer_name, const String& my_uid);
         void account_commit(view_member* peer, lognumber_t commitno);
