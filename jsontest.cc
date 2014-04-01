@@ -542,6 +542,26 @@ int main(int argc, char** argv) {
         CHECK(j.to_u() == (uint64_t) 1 << 63);
     }
 
+    {
+        Json j = Json::object("a", 1, "b", Json(2), "c", "9137471");
+        CHECK(j.unparse() == "{\"a\":1,\"b\":2,\"c\":\"9137471\"}");
+    }
+
+    {
+        Json a = Json::parse("[{\"a\":1},{\"b\":2},{\"c\":3},{\"d\":4}]");
+        Json b = Json::array(a[1], a[3], a[2], a[0]);
+        CHECK(&a[0]["a"].cvalue() == &b[3]["a"].cvalue());
+        b.push_back(a[5]);
+        CHECK(b[4] == Json());
+        CHECK(a.size() == 4);
+        b = Json::object("a5", a[5], "a3", a[3]);
+        CHECK(b.unparse() == "{\"a5\":null,\"a3\":{\"d\":4}}");
+        CHECK(a.size() == 4);
+        b.set_list("a6", a[6], "a2", a[2]);
+        CHECK(b.unparse() == "{\"a5\":null,\"a3\":{\"d\":4},\"a6\":null,\"a2\":{\"c\":3}}");
+        CHECK(a.size() == 4);
+    }
+
     std::cout << "All tests pass!\n";
     return 0;
 }
