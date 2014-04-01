@@ -95,12 +95,11 @@ class Json {
     static inline const Json& make_null();
     static inline Json make_array();
     static inline Json make_array_reserve(int n);
-    static inline Json array();
-    template <typename T, typename... U>
-    static inline Json array(T first, U... rest);
+    template <typename... Args>
+    static inline Json array(Args&&... rest);
     static inline Json make_object();
     template <typename... Args>
-    static inline Json object(Args... rest);
+    static inline Json object(Args&&... rest);
     static inline Json make_string(const String& x);
     static inline Json make_string(const char* s, int len);
 
@@ -200,14 +199,14 @@ class Json {
     inline Json& at_insert(Str key);
     inline Json& at_insert(const char* key);
 
-    template <typename T> inline Json& set(const String& key, T value);
-#if HAVE_CXX_RVALUE_REFERENCES
-    inline Json& set(const String& key, Json&& x);
-#endif
+    inline Json& set(const String& key, Json value);
+    template <typename P>
+    inline Json& set(const String& key, const Json_proxy_base<P>& value);
     inline Json& unset(Str key);
-    inline Json& multiset();
-    template <typename T, typename... U>
-    inline Json& multiset(const String& key, T value, U... rest);
+
+    inline Json& set_list();
+    template <typename T, typename... Args>
+    inline Json& set_list(const String& key, T value, Args&&... rest);
 
     inline std::pair<object_iterator, bool> insert(const object_value_type& x);
     inline object_iterator insert(object_iterator position,
@@ -231,24 +230,17 @@ class Json {
     inline const Json& back() const;
     inline Json& back();
 
-    template <typename T> inline Json& push_back(T x);
+    inline Json& push_back(Json x);
     template <typename P> inline Json& push_back(const Json_proxy_base<P>& x);
-#if HAVE_CXX_RVALUE_REFERENCES
-    inline Json& push_back(Json&& x);
-#endif
     inline void pop_back();
 
-    inline Json& insert_back();
-    template <typename T, typename... U>
-    inline Json& insert_back(T first, U... rest);
+    inline Json& push_back_list();
+    template <typename T, typename... Args>
+    inline Json& push_back_list(T first, Args&&... rest);
 
-    template <typename T>
-    inline array_iterator insert(array_iterator position, T x);
+    inline array_iterator insert(array_iterator position, Json x);
     template <typename P>
     inline array_iterator insert(array_iterator position, const Json_proxy_base<P>& x);
-#if HAVE_CXX_RVALUE_REFERENCES
-    inline array_iterator insert(array_iterator position, Json&& x);
-#endif
     array_iterator erase(array_iterator first, array_iterator last);
     inline array_iterator erase(array_iterator position);
 
@@ -1084,16 +1076,19 @@ class Json_proxy_base {
     Json& at_insert(const char* key) {
 	return value().at_insert(key);
     }
-    template <typename T> inline Json& set(const String& key, T value) {
+    inline Json& set(const String& key, Json value) {
 	return this->value().set(key, value);
     }
-#if HAVE_CXX_RVALUE_REFERENCES
-    inline Json& set(const String& key, Json&& value) {
-	return this->value().set(key, std::move(value));
+    template <typename Q>
+    inline Json& set(const String& key, const Json_proxy_base<Q>& value) {
+	return this->value().set(key, value);
     }
-#endif
     Json& unset(Str key) {
 	return value().unset(key);
+    }
+    template <typename... Args>
+    inline Json& set_list(Args&&... args) {
+        return value().set_list(std::forward<Args>(args)...);
     }
     std::pair<Json::object_iterator, bool> insert(const Json::object_value_type &x) {
 	return value().insert(x);
@@ -1101,11 +1096,6 @@ class Json_proxy_base {
     Json::object_iterator insert(Json::object_iterator position, const Json::object_value_type &x) {
 	return value().insert(position, x);
     }
-#if HAVE_CXX_RVALUE_REFERENCES
-    Json::object_iterator insert(Json::object_iterator position, Json&& x) {
-	return value().insert(position, std::move(x));
-    }
-#endif
     Json::object_iterator erase(Json::object_iterator it) {
         return value().erase(it);
     }
@@ -1142,31 +1132,24 @@ class Json_proxy_base {
     Json& back() {
 	return value().back();
     }
-    template <typename T> Json& push_back(T x) {
-	return value().push_back(x);
+    Json& push_back(Json x) {
+	return value().push_back(std::move(x));
     }
     template <typename Q> Json& push_back(const Json_proxy_base<Q>& x) {
         return value().push_back(x);
     }
-#if HAVE_CXX_RVALUE_REFERENCES
-    Json& push_back(Json&& x) {
-	return value().push_back(std::move(x));
-    }
-#endif
     void pop_back() {
 	value().pop_back();
     }
-    template <typename T> Json::array_iterator insert(Json::array_iterator position, T x) {
-	return value().insert(position, x);
+    template <typename... Args> Json& push_back_list(Args&&... args) {
+        return value().push_back_list(std::forward<Args>(args)...);
+    }
+    Json::array_iterator insert(Json::array_iterator position, Json x) {
+	return value().insert(position, std::move(x));
     }
     template <typename Q> Json::array_iterator insert(Json::array_iterator position, const Json_proxy_base<Q>& x) {
         return value().insert(position, x);
     }
-#if HAVE_CXX_RVALUE_REFERENCES
-    Json::array_iterator insert(Json::array_iterator position, Json&& x) {
-        return value().insert(position, std::move(x));
-    }
-#endif
     Json::array_iterator erase(Json::array_iterator first, Json::array_iterator last) {
         return value().erase(first, last);
     }
@@ -1606,19 +1589,12 @@ inline Json Json::make_array() {
     j.u_.x.type = j_array;
     return j;
 }
-/** @brief Return an empty array-valued Json. */
-inline Json Json::array() {
+/** @brief Return an array-valued Json containing @a args. */
+template <typename... Args>
+inline Json Json::array(Args&&... args) {
     Json j;
     j.u_.x.type = j_array;
-    return j;
-}
-/** @brief Return an array-valued Json containing [first, rest...]. */
-template <typename T, typename... U>
-inline Json Json::array(T first, U... rest) {
-    Json j;
-    j.u_.x.type = j_array;
-    j.push_back(first);
-    j.insert_back(rest...);
+    j.push_back_list(std::forward<Args>(args)...);
     return j;
 }
 /** @brief Return an empty array-valued Json with reserved space for @a n items. */
@@ -1636,10 +1612,10 @@ inline Json Json::make_object() {
 }
 /** @brief Return an empty object-valued Json. */
 template <typename... Args>
-inline Json Json::object(Args... rest) {
+inline Json Json::object(Args&&... rest) {
     Json j;
     j.u_.o.type = j_object;
-    j.multiset(rest...);
+    j.set_list(std::forward<Args>(rest)...);
     return j;
 }
 /** @brief Return a string-valued Json. */
@@ -2285,20 +2261,19 @@ inline Json& Json::at_insert(const char *key) {
 
     An array Json is converted to an object Json with numeric keys. Other
     non-object Jsons are converted to empty objects. */
-template <typename T> inline Json& Json::set(const String& key, T value) {
-    uniqueify_object(true);
-    ojson()->get_insert(key) = Json(value);
-    return *this;
-}
-
-#if HAVE_CXX_RVALUE_REFERENCES
-/** @overload */
-inline Json& Json::set(const String& key, Json&& value) {
+inline Json& Json::set(const String& key, Json value) {
     uniqueify_object(true);
     ojson()->get_insert(key) = std::move(value);
     return *this;
 }
-#endif
+
+/** @overload */
+template <typename P>
+inline Json& Json::set(const String& key, const Json_proxy_base<P>& value) {
+    uniqueify_object(true);
+    ojson()->get_insert(key) = value.cvalue();
+    return *this;
+}
 
 /** @brief Remove the value of @a key from an object Json.
     @return this Json
@@ -2311,19 +2286,20 @@ inline Json& Json::unset(Str key) {
     return *this;
 }
 
-inline Json& Json::multiset() {
+/** @brief Add the key-value pairs [key, value, ...] to the object.
+    @return this Json
+
+    An array Json is converted to an object Json with numeric keys. Other
+    non-object Jsons are converted to empty objects. */
+template <typename T, typename... Args>
+inline Json& Json::set_list(const String& key, T value, Args&&... rest) {
+    set(key, std::move(value));
+    set_list(std::forward<Args>(rest)...);
     return *this;
 }
 
-/** @brief Insert the items [first, rest...] onto the back of this array.
-    @pre is_array() || is_null()
-    @return this Json
-
-    A null Json is promoted to an array. */
-template <typename T, typename... U>
-inline Json& Json::multiset(const String& key, T value, U... rest) {
-    set(key, value);
-    multiset(rest...);
+/** @overload */
+inline Json& Json::set_list() {
     return *this;
 }
 
@@ -2491,8 +2467,8 @@ inline Json& Json::back() {
     @return this Json
 
     A null Json is promoted to an array. */
-template <typename T> inline Json& Json::push_back(T x) {
-    new(uniqueify_array_insert(false, -1)) Json(x);
+inline Json& Json::push_back(Json x) {
+    new(uniqueify_array_insert(false, -1)) Json(std::move(x));
     return *this;
 }
 
@@ -2501,14 +2477,6 @@ template <typename P> inline Json& Json::push_back(const Json_proxy_base<P>& x) 
     new(uniqueify_array_insert(false, -1)) Json(x.cvalue());
     return *this;
 }
-
-#if HAVE_CXX_RVALUE_REFERENCES
-/** @overload */
-inline Json& Json::push_back(Json&& x) {
-    new(uniqueify_array_insert(false, -1)) Json(std::move(x));
-    return *this;
-}
-#endif
 
 /** @brief Remove the last element from an array.
     @pre is_array() && !empty() */
@@ -2519,7 +2487,7 @@ inline void Json::pop_back() {
     u_.a.x->a[u_.a.x->size].~Json();
 }
 
-inline Json& Json::insert_back() {
+inline Json& Json::push_back_list() {
     return *this;
 }
 
@@ -2528,10 +2496,10 @@ inline Json& Json::insert_back() {
     @return this Json
 
     A null Json is promoted to an array. */
-template <typename T, typename... U>
-inline Json& Json::insert_back(T first, U... rest) {
-    push_back(first);
-    insert_back(rest...);
+template <typename T, typename... Args>
+inline Json& Json::push_back_list(T first, Args&&... rest) {
+    push_back(std::move(first));
+    push_back_list(std::forward<Args>(rest)...);
     return *this;
 }
 
@@ -2541,10 +2509,10 @@ inline Json& Json::insert_back(T first, U... rest) {
     @return this Json
 
     A null Json is promoted to an array. */
-template <typename T> inline Json::array_iterator Json::insert(array_iterator position, T x) {
+inline Json::array_iterator Json::insert(array_iterator position, Json x) {
     precondition(position >= abegin() && position <= aend());
     size_type pos = position - abegin();
-    new(uniqueify_array_insert(false, pos)) Json(x);
+    new(uniqueify_array_insert(false, pos)) Json(std::move(x));
     return abegin() + pos;
 }
 
@@ -2555,16 +2523,6 @@ template <typename P> inline Json::array_iterator Json::insert(array_iterator po
     new(uniqueify_array_insert(false, pos)) Json(x.cvalue());
     return abegin() + pos;
 }
-
-#if HAVE_CXX_RVALUE_REFERENCES
-/** @overload */
-inline Json::array_iterator Json::insert(array_iterator position, Json&& x) {
-    precondition(position >= abegin() && position <= aend());
-    size_type pos = position - abegin();
-    new(uniqueify_array_insert(false, pos)) Json(std::move(x));
-    return abegin() + pos;
-}
-#endif
 
 inline Json::array_iterator Json::erase(array_iterator position) {
     return erase(position, position + 1);
