@@ -645,16 +645,23 @@ class Vrtestlistener : public Vrendpoint {
 
 class Vrtestconnection : public Vrendpoint {
   public:
-    inline Vrtestconnection(Vrtestnode* from, Vrtestnode* to)
-        : Vrendpoint(from->uid(), to->uid()), from_node_(from) {
-    }
+    Vrtestconnection(Vrtestnode* from, Vrtestnode* to);
     ~Vrtestconnection();
+    inline void set_delay(double d);
+    inline void set_loss(double p);
     void send(Json msg);
     void receive(event<Json> done);
   private:
     Vrtestnode* from_node_;
-    tamer::channel<Json> q_;
+    double delay_;
+    unsigned long loss_p_;
+    typedef std::pair<double, Json> message_t;
+    std::deque<message_t> q_;
+    std::deque<tamer::event<Json> > w_;
     Vrtestconnection* peer_;
+    tamer::event<> coroutine_;
+    tamer::event<> kill_coroutine_;
+    tamed void coroutine();
     friend class Vrtestnode;
 };
 
@@ -681,24 +688,86 @@ Vrtestconnection* Vrtestnode::connect(Vrtestnode* n) {
     return my;
 }
 
+Vrtestconnection::Vrtestconnection(Vrtestnode* from, Vrtestnode* to)
+    : Vrendpoint(from->uid(), to->uid()), from_node_(from),
+      delay_(0), loss_p_(0) {
+    coroutine();
+}
+
 Vrtestconnection::~Vrtestconnection() {
+    kill_coroutine_();
     if (peer_) {
         peer_->peer_ = 0;
-        while (!peer_->q_.wait_empty())
-            peer_->q_.push_back(Json());
+        while (!w_.empty()) {
+            w_.front().unblock();
+            w_.pop_front();
+        }
+        q_.clear();
     }
 }
 
+void Vrtestconnection::set_delay(double d) {
+    delay_ = d;
+}
+
+void Vrtestconnection::set_loss(double p) {
+    assert(p >= 0 && p <= 1);
+    loss_p_ = (unsigned long) (p * ((unsigned long) RAND_MAX + 1));
+}
+
 void Vrtestconnection::send(Json msg) {
-    if (peer_)
-        peer_->q_.push_back(msg);
+    if ((!loss_p_ || (unsigned long) random() >= loss_p_)
+        && peer_) {
+        double deliver = tamer::drecent() + delay_;
+        if (!w_.empty()
+            && q_.empty()
+            && deliver >= q_.front().first) {
+            w_.front()(std::move(msg));
+            w_.pop_front();
+        } else {
+            q_.push_back(std::make_pair(deliver, std::move(msg)));
+            if (!w_.empty())
+                coroutine_();
+        }
+    }
 }
 
 void Vrtestconnection::receive(event<Json> done) {
-    if (peer_)
-        q_.pop_front(done);
-    else
+    if (peer_) {
+        double now = tamer::drecent();
+        if (peer_->w_.empty()
+            && !peer_->q_.empty()
+            && peer_->q_.front().first <= now) {
+            done(std::move(peer_->q_.front().second));
+            peer_->q_.pop_front();
+        } else {
+            peer_->w_.push_back(std::move(done));
+            if (!peer_->q_.empty())
+                peer_->coroutine_();
+        }
+    } else
         done(Json());
+}
+
+tamed void Vrtestconnection::coroutine() {
+    tvars {
+        tamer::event<> kill;
+        tamer::rendezvous<> rendez;
+    }
+    kill_coroutine_ = kill = rendez.make_event();
+    while (kill) {
+        if (!w_.empty() && !w_.front())
+            w_.pop_front();
+        else if (!w_.empty() && !q_.empty()
+                 && tamer::drecent() >= q_.front().first) {
+            w_.front()(std::move(q_.front().second));
+            w_.pop_front();
+            q_.pop_front();
+        } else if (!w_.empty() && !q_.empty())
+            twait { tamer::at_time(q_.front().first, make_event()); }
+        else
+            twait { coroutine_ = make_event(); }
+    }
 }
 
 void Vrtestlistener::connect(Json def, event<Vrendpoint*> done) {
