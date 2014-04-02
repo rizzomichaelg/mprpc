@@ -126,10 +126,6 @@ inline Vrgroup::view_member* Vrgroup::view_type::find_pointer(const String& uid)
     return nullptr;
 }
 
-inline String Vrgroup::view_type::primary_uid() const {
-    return members[primary_index].uid;
-}
-
 inline Json Vrgroup::view_type::members_json() const {
     Json j = Json::array();
     for (auto it = members.begin(); it != members.end(); ++it) {
@@ -276,10 +272,10 @@ void Vrgroup::dump(std::ostream& out) const {
 String Vrgroup::unparse_view_state() const {
     StringAccum sa;
     sa << "v#" << cur_view_.viewno
-       << (cur_view_.primary_index == cur_view_.my_index ? "p" : "");
+       << (cur_view_.me_primary() ? "p" : "");
     if (next_view_.viewno != cur_view_.viewno)
         sa << "<v#" << next_view_.viewno
-           << (next_view_.primary_index == next_view_.my_index ? "p" : "")
+           << (next_view_.me_primary() ? "p" : "")
            << ":" << next_view_.nacked << "." << next_view_.nconfirmed << ">";
     return sa.take_string();
 }
@@ -383,6 +379,8 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
             cur_view_ = next_view_;
             return;
         }
+        if (payload["log"] && next_view_.me_primary())
+            process_view_log_transfer(payload);
         want_send = !payload["ack"] && !payload["confirm"];
     } else {
         // start new view
@@ -400,10 +398,10 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
 
     if (cur_view_.nacked > cur_view_.f()
         && next_view_.nacked > next_view_.f()
-        && (next_view_.primary_index == next_view_.my_index
-            || next_view_.members[next_view_.primary_index].acked)
+        && (next_view_.me_primary()
+            || next_view_.primary().acked)
         && !next_view_sent_confirm_) {
-        if (next_view_.primary_index != next_view_.my_index) {
+        if (!next_view_.me_primary()) {
             Vrendpoint* nextpri = primary(next_view_);
             send_view(nextpri);
             want_send = want_send && nextpri != who;
@@ -412,13 +410,34 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
         next_view_sent_confirm_ = true;
     }
     if (next_view_.nconfirmed > next_view_.f()
-        && next_view_.my_index == next_view_.primary_index) {
+        && next_view_.me_primary()) {
         next_view_.account_all_commits();
         broadcast_view();
         next_view_.clear_preparation();
         cur_view_ = next_view_;
     } else if (want_send)
         send_view(who);
+}
+
+void Vrgroup::process_view_log_transfer(Json& payload) {
+    assert(payload["storeno"].is_u()
+           && payload["log"].is_a()
+           && payload["log"].size() % 4 == 0);
+    lognumber_t last_logno = payload["storeno"].to_u();
+    lognumber_t logno = last_logno - payload["log"].size() / 4;
+    const Json& log = payload["log"];
+    assert(!logno_less(logno, first_logno_));
+    for (int i = 0; i != log.size(); i += 4, ++logno) {
+        log_item li(log[i].to_u(), log[i+1].to_s(), log[i+2].to_u(), log[i+3]);
+        auto it = log_.begin() + (logno - first_logno_);
+        if (it == log_.end())
+            log_.push_back(std::move(li));
+        else if (viewno_less(it->viewno, li.viewno))
+            *it = std::move(li);
+        else if (it->viewno == li.viewno)
+            assert(it->client_uid == li.client_uid
+                   && it->client_seqno == li.client_seqno);
+    }
 }
 
 Json Vrgroup::view_payload(const String& peer_uid) {
@@ -437,8 +456,22 @@ Json Vrgroup::view_payload(const String& peer_uid) {
             && next_view_.nacked > next_view_.f())
             payload["confirm"] = true;
         if (next_view_.nconfirmed > next_view_.f()
-            && next_view_.my_index == next_view_.primary_index)
+            && next_view_.me_primary())
             payload["adopt"] = true;
+        if (!next_view_.me_primary()
+            && next_view_.primary().has_storeno) {
+            lognumber_t logno = next_view_.primary().storeno;
+            assert(!logno_less(logno, first_logno_)
+                   && !logno_less(first_logno_ + log_.size(), logno));
+            Json log = Json::array();
+            for (auto it = log_.begin() + (logno - first_logno_);
+                 it != log_.end(); ++it)
+                log.push_back_list(it->viewno,
+                                   it->client_uid,
+                                   it->client_seqno,
+                                   it->request);
+            payload["log"] = log;
+        }
     }
     return payload;
 }
@@ -491,7 +524,7 @@ void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
         broadcast_peers(commit);
 
         // the new commits are replicated only here
-        view_member* my_member = &cur_view_.members[cur_view_.primary_index];
+        view_member* my_member = &cur_view_.primary();
         my_member->storeno = first_logno_ + log_.size();
         my_member->store_count = 1;
     }

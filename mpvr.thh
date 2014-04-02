@@ -114,13 +114,22 @@ class Vrgroup {
         inline unsigned f() const {
             return size() / 2;
         }
+        inline bool me_primary() const {
+            return primary_index == my_index;
+        }
+        inline view_member& primary() {
+            return members[primary_index];
+        }
+        inline String primary_uid() const {
+            return members[primary_index].uid;
+        }
+
         inline int count(const String& uid) const;
         inline view_member* find_pointer(const String& uid);
         Json members_json() const;
         Json commits_json() const;
         bool assign(Json msg, const String& my_uid);
         //inline Json operator[](const String& uid) const;
-        inline String primary_uid() const;
         bool operator==(const view_type& x) const;
         bool operator!=(const view_type& x) const { return !(*this == x); }
         bool shared_quorum(const view_type& x) const;
@@ -189,6 +198,7 @@ class Vrgroup {
     tamed void send_view(Json peer);
     void broadcast_view();
     void process_view(Vrendpoint* who, const Json& msg);
+    void process_view_log_transfer(Json& payload);
     void process_request(Vrendpoint* who, const Json& msg);
     void process_replicate(Vrendpoint* who, const Json& msg);
     void process_commit(Vrendpoint* who, const Json& msg);
