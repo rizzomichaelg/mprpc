@@ -22,6 +22,12 @@ class Vrendpoint {
     inline const String& remote_uid() const {
         return remote_uid_;
     }
+    inline const String& connection_uid() const {
+        return connection_uid_;
+    }
+    inline void set_connection_uid(String x) {
+        connection_uid_ = std::move(x);
+    }
     inline unsigned connection_version() const {
         return connection_version_;
     }
@@ -31,21 +37,24 @@ class Vrendpoint {
     static String make_client_uid();
     static String make_replica_uid();
 
-    //virtual bool connected() const;
-    //virtual void connect(event<bool> done);
     virtual void connect(Json def, event<Vrendpoint*> done);
     virtual void receive_connection(event<Vrendpoint*> done);
 
     virtual void send(Json msg);
     virtual void receive(event<Json> done);
+    virtual void close();
 
+    void print_send(const Json& msg, const String& extra = String());
     void print_receive(const Json& msg, const String& extra = String());
     void print_receive(const Json& msg, const Json& extra);
 
   protected:
     String local_uid_;
     String remote_uid_;
+    String connection_uid_;
     unsigned connection_version_;
+
+    void print_message(bool issend, const Json& msg, const String& extra);
 };
 
 
@@ -77,8 +86,12 @@ class Vrgroup {
         return tamer::add_timeout(3, std::move(done));
     }
 
-    tamed void connect(Json peer_name, event<Vrendpoint*> done);
-    tamed void join(Json peer_name, event<Vrendpoint*> done);
+    tamed void connect(Json peer_name, event<> done);
+    tamed void join(Json peer_name, event<> done);
+
+    void at_view(viewnumber_t viewno, tamer::event<> done);
+    void at_store(lognumber_t storeno, tamer::event<> done);
+    void at_commit(lognumber_t commitno, tamer::event<> done);
 
     void dump(std::ostream&) const;
 
@@ -149,7 +162,7 @@ class Vrgroup {
 
     Vrendpoint* me_;
     mutable std::unordered_map<String, Vrendpoint*> endpoints_;
-    mutable std::unordered_map<String, tamer::event<Vrendpoint*> > in_progress_;
+    mutable std::unordered_map<String, tamer::event<> > connection_wait_;
 
     struct log_item {
         viewnumber_t viewno;
@@ -170,12 +183,12 @@ class Vrgroup {
 
     bool next_view_sent_confirm_;
 
-    Vrendpoint* primary(const view_type& v) const;
-    inline Vrendpoint* primary() const {
-        return primary(cur_view_);
-    }
+    std::deque<std::pair<viewnumber_t, tamer::event<> > > at_view_;
+    std::deque<std::pair<lognumber_t, tamer::event<> > > at_store_;
+    std::deque<std::pair<lognumber_t, tamer::event<> > > at_commit_;
+
     inline bool is_primary() const {
-        return cur_view_.primary_index == cur_view_.my_index;
+        return cur_view_.me_primary();
     }
     inline bool between_views() const {
         return cur_view_.viewno != next_view_.viewno
@@ -197,9 +210,19 @@ class Vrgroup {
     void update_commitno(lognumber_t commitno);
     tamed void send_peer(Json peer_name, Json msg);
     void broadcast_peers(Json msg);
+    template <typename T> void process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list);
 
     tamed void listen_loop();
-    tamed void interconnect_loop(Vrendpoint*);
+    tamed void connection_loop(Vrendpoint* peer, bool active_end);
 };
+
+template <typename T>
+void Vrgroup::process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list) {
+    for (auto it = list.begin(); it != list.end(); ++it)
+        if (number >= it->first)
+            it->second();
+    while (!list.empty() && !list.front().second)
+        list.pop_front();
+}
 
 #endif

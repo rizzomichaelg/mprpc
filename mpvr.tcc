@@ -13,8 +13,9 @@ enum {
     m_vri_response = 2,    // [2, xxx, [seqno, reply]*]
     m_vri_commit = 3,      // P->R: [3, xxx, viewno, commitno, logno, [client_uid, client_seqno, request]*]
                            // R->P: [3, xxx, viewno, storeno]
-    m_vri_join = 4,        // [4, xxx]
-    m_vri_view = 5,        // [5, xxx, object]
+    m_vri_handshake = 4,   // [4, xxx, random_value]
+    m_vri_join = 5,        // [5, xxx]
+    m_vri_view = 6,        // [6, xxx, object]
     m_vri_error = 100
 };
 
@@ -25,32 +26,23 @@ std::ostream& operator<<(std::ostream& out, const timeval& tv) {
     return out;
 }
 
-String Vrendpoint::make_replica_uid() {
-#if 0
+String random_string() {
     FILE* f = fopen("/dev/urandom", "rb");
     uint64_t x = (uint64_t) (tamer::dnow() * 1000000);
     size_t n = fread(&x, sizeof(x), 1, f);
     assert(n == 1);
     fclose(f);
     return String((char*) &x, 6).encode_base64();
-#else
+}
+
+String Vrendpoint::make_replica_uid() {
     static int counter;
     return String("n") + String(counter++);
-#endif
 }
 
 String Vrendpoint::make_client_uid() {
-#if 0
-    FILE* f = fopen("/dev/urandom", "rb");
-    uint64_t x = (uint64_t) (tamer::dnow() * 1000000);
-    size_t n = fread(&x, sizeof(x), 1, f);
-    assert(n == 1);
-    fclose(f);
-    return String((char*) &x, 6).encode_base64();
-#else
     static int counter;
     return String("c") + String(counter++);
-#endif
 }
 
 
@@ -226,6 +218,7 @@ Json Vrgroup::view_type::commits_json() const {
 
 void Vrgroup::view_type::account_commit(view_member* peer, lognumber_t storeno) {
     lognumber_t old_storeno = peer->storeno;
+    peer->has_storeno = true;
     peer->storeno = storeno;
     peer->store_count = 0;
     for (auto it = members.begin(); it != members.end(); ++it) {
@@ -289,69 +282,112 @@ tamed void Vrgroup::listen_loop() {
         twait { me_->receive_connection(make_event(peer)); }
         if (!peer)
             break;
-        if (endpoints_[peer->remote_uid()]) {
-            std::cerr << uid() << ": listen: dropping redundant connection to "
-                      << peer->remote_uid() << "\n";
-            delete peer;
-        } else {
-            endpoints_[peer->remote_uid()] = peer;
-            interconnect_loop(peer);
-        }
+        connection_loop(peer, false);
     }
 }
 
-tamed void Vrgroup::connect(Json peer_name, event<Vrendpoint*> done) {
+tamed void Vrgroup::connect(Json peer_name, event<> done) {
     tamed {
         Vrendpoint* peer;
         String peer_uid;
     }
+
     assert(me_);
     if (peer_name.is_s())
         peer_name = Json::object("uid", peer_name);
-
     peer_uid = peer_name["uid"].to_s();
-    if (in_progress_.count(peer_uid))
-        twait { in_progress_[peer_uid] += make_event(peer); }
-    else {
-        in_progress_[peer_uid] = tamer::event<Vrendpoint*>();
-        std::cerr << uid() << ": connect: connecting to " << peer_uid << "\n";
-        twait { me_->connect(peer_name, make_event(peer)); }
-        in_progress_[peer_uid](peer);
-        in_progress_.erase(peer_uid);
+
+    // does peer already exist?
+    if (endpoints_[peer_uid]) {
+        done();
+        return;
     }
 
+    // are we already connecting?
+    if (connection_wait_.count(peer_uid)) {
+        connection_wait_[peer_uid] += std::move(done);
+        return;
+    }
+
+    connection_wait_[peer_uid] = std::move(done);
+    // random delay to reduce likelihood of simultaneous connection,
+    // which we currently handle poorly
+    twait { tamer::at_delay_usec(random() % 20000, make_event()); }
+
+    // connected during delay?
+    if (endpoints_[peer_uid]) {
+        assert(!connection_wait_.count(peer_uid));
+        return;
+    }
+
+    std::cerr << uid() << ": connect: connecting to " << peer_uid << "\n";
+    twait { me_->connect(peer_name, make_event(peer)); }
     if (peer) {
         assert(peer->remote_uid() == peer_uid);
-        if (endpoints_[peer_uid]) {
-            std::cerr << uid() << ": connect: dropping redundant connection to "
-                      << peer_uid << "\n";
-            delete peer;
-            peer = endpoints_[peer_uid];
-        } else
-            endpoints_[peer_uid] = peer;
-        interconnect_loop(peer);
-        done(peer);
-    } else
-        done(nullptr);
+        peer->set_connection_uid(random_string());
+        peer->send(Json::array((int) m_vri_handshake, Json::null,
+                               peer->connection_uid()));
+        connection_loop(peer, true);
+    } else {
+        connection_wait_[peer_uid]();
+        connection_wait_.erase(peer_uid);
+    }
 }
 
-tamed void Vrgroup::join(Json peer_name, event<Vrendpoint*> done) {
-    tamed { Vrendpoint* peer; }
+tamed void Vrgroup::join(Json peer_name, event<> done) {
+    tamed {
+        String peer_uid = peer_name["uid"].to_s();
+        Vrendpoint* ep;
+    }
     assert(want_member_ && next_view_.size() == 1);
-    twait { connect(peer_name, make_event(peer)); }
-    if (peer)
-        peer->send(Json::array((int) m_vri_join, Json::null));
-    // XXX trigger done only when joined
-    done(peer);
+    while (!(ep = endpoints_[peer_uid]))
+        twait { connect(peer_name, make_event()); }
+    if (ep)
+        ep->send(Json::array((int) m_vri_join, Json::null));
+    done();
 }
 
-tamed void Vrgroup::interconnect_loop(Vrendpoint* peer) {
-    tamed { Json msg; }
+tamed void Vrgroup::connection_loop(Vrendpoint* peer, bool active_end) {
+    tamed { Json msg; String peer_uid = peer->remote_uid(); }
+
+    // first wait for handshake
+    twait { peer->receive(make_event(msg)); }
+    if (msg && msg.is_a() && msg.size() >= 3 && msg[0].is_i() && msg[2].is_s()
+        && msg[0].to_i() == m_vri_handshake) {
+        String handshake_value = msg[2].to_s();
+        assert(!peer->connection_uid()
+               || peer->connection_uid() == handshake_value);
+        peer->set_connection_uid(handshake_value);
+        if (endpoints_[peer_uid]) {
+            String hv[2] = { endpoints_[peer_uid]->connection_uid(),
+                             handshake_value };
+            std::cerr << uid() << ": dropping "
+                      << (hv[0] < hv[1] ? "new" : "old")
+                      << " redundant connection to " << peer_uid
+                      << " [drop " << hv[hv[0] < hv[1]]
+                      << ", keep " << hv[hv[0] >= hv[1]] << "]\n";
+            if (hv[0] < hv[1]) {
+                delete peer;
+                return;
+            } else
+                endpoints_[peer_uid]->close();
+        }
+        endpoints_[peer_uid] = peer;
+        connection_wait_[peer_uid]();
+        connection_wait_.erase(peer_uid);
+        if (!active_end)
+            peer->send(msg);
+    } else {
+        std::cerr << uid() << ": bad handshake from " << peer_uid << "\n";
+        delete peer;
+        return;
+    }
+
     while (1) {
         twait { peer->receive(make_event(msg)); }
-        peer->print_receive(msg, unparse_view_state());
         if (!msg || !msg.is_a() || msg.size() < 2 || !msg[0].is_i())
             break;
+        peer->print_receive(msg, unparse_view_state());
         if (msg[0] == m_vri_request)
             process_request(peer, msg);
         else if (msg[0] == m_vri_commit)
@@ -361,13 +397,31 @@ tamed void Vrgroup::interconnect_loop(Vrendpoint* peer) {
         else if (msg[0] == m_vri_view)
             process_view(peer, msg);
     }
+
+    if (endpoints_[peer_uid] == peer)
+        endpoints_.erase(peer_uid);
+    delete peer;
 }
 
-Vrendpoint* Vrgroup::primary(const view_type& v) const {
-    if ((unsigned) v.primary_index < (unsigned) v.members.size())
-        return endpoints_[v.members[v.primary_index].uid];
+void Vrgroup::at_view(viewnumber_t viewno, tamer::event<> done) {
+    if (viewno > cur_view_.viewno)
+        at_view_.push_back(std::make_pair(viewno, std::move(done)));
     else
-        return nullptr;
+        done();
+}
+
+void Vrgroup::at_store(lognumber_t storeno, tamer::event<> done) {
+    if (storeno > first_logno_ + log_.size())
+        at_store_.push_back(std::make_pair(storeno, std::move(done)));
+    else
+        done();
+}
+
+void Vrgroup::at_commit(viewnumber_t commitno, tamer::event<> done) {
+    if (commitno > commitno_)
+        at_commit_.push_back(std::make_pair(commitno, std::move(done)));
+    else
+        done();
 }
 
 void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
@@ -393,6 +447,7 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
         if (payload["adopt"]) {
             next_view_.clear_preparation();
             cur_view_ = next_view_;
+            process_at_number(cur_view_.viewno, at_view_);
             return;
         }
         if (payload["log"] && next_view_.me_primary())
@@ -416,9 +471,8 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
             || next_view_.primary().acked)
         && !next_view_sent_confirm_) {
         if (!next_view_.me_primary()) {
-            Vrendpoint* nextpri = primary(next_view_);
-            send_view(nextpri);
-            want_send = want_send && nextpri != who;
+            send_view(next_view_.primary_uid());
+            want_send = want_send && !next_view_.me_primary();
         } else
             next_view_.prepare(uid(), Json::object("confirm", true));
         next_view_sent_confirm_ = true;
@@ -429,6 +483,7 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
         broadcast_view();
         next_view_.clear_preparation();
         cur_view_ = next_view_;
+        process_at_number(cur_view_.viewno, at_view_);
     } else if (want_send)
         send_view(who);
 }
@@ -452,6 +507,7 @@ void Vrgroup::process_view_log_transfer(Json& payload) {
             assert(it->client_uid == li.client_uid
                    && it->client_seqno == li.client_seqno);
     }
+    process_at_number(first_logno_ + log.size(), at_store_);
 }
 
 Json Vrgroup::view_payload(const String& peer_uid) {
@@ -494,19 +550,21 @@ void Vrgroup::send_view(Vrendpoint* who, Json payload, Json seqno) {
     if (!payload.get("members"))
         payload.merge(view_payload(who->remote_uid()));
     who->send(Json::array((int) m_vri_view, seqno, payload));
-    std::cout << tamer::now() << ":"
-              << uid() << " -> " << who->remote_uid() << ": send " << payload
-              << " " << unparse_view_state() << "\n";
+    who->print_send(payload, unparse_view_state());
 }
 
 tamed void Vrgroup::send_view(Json peer_name) {
     tamed {
-        Json payload = view_payload(peer_name["uid"].to_s());
+        String peer_uid;
+        Json payload;
         Vrendpoint* ep;
     }
-    if (!(ep = endpoints_[peer_name["uid"].to_s()]))
-        twait { connect(peer_name, make_event(ep)); }
-    if (ep && ep != me_)
+    peer_uid = (peer_name.is_s() ? peer_name : peer_name["uid"]).to_s();
+    payload = view_payload(peer_uid);
+    while (!(ep = endpoints_[peer_uid])) {
+        std::cerr << "." << peer_uid << "/" << uid() << ".";
+        twait { connect(peer_name, make_event()); }}
+    if (ep != me_)
         send_view(ep, payload);
 }
 
@@ -547,6 +605,7 @@ void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
             commit.push_back(seqno);
             commit.push_back(msg[3]);
         }
+        process_at_number(first_logno_ + log_.size(), at_store_);
         broadcast_peers(commit);
 
         // the new commits are replicated only here
@@ -557,10 +616,13 @@ void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
 }
 
 tamed void Vrgroup::send_peer(Json peer_name, Json msg) {
-    tamed { Vrendpoint* ep; }
-    if (!(ep = endpoints_[peer_name["uid"].to_s()]))
-        twait { connect(peer_name, make_event(ep)); }
-    if (ep && ep != me_)
+    tamed {
+        String peer_uid = peer_name["uid"].to_s();
+        Vrendpoint* ep;
+    }
+    while (!(ep = endpoints_[peer_uid]))
+        twait { connect(peer_name, make_event()); }
+    if (ep != me_)
         ep->send(msg);
 }
 
@@ -591,8 +653,10 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
         if (peer->store_count > cur_view_.f()
             && commitno > commitno_)
             update_commitno(commitno);
-    } else
+    } else {
         commitno_ = commitno;
+        process_at_number(commitno_, at_commit_);
+    }
 
     if (!is_primary() && msg.size() > 5) {
         lognumber_t logno = msg[4].to_u();
@@ -606,10 +670,11 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
                 log_[logpos].client_seqno = msg[i + 1].to_u();
                 log_[logpos].request = msg[i + 2];
             }
-        primary()->send(Json::array((int) m_vri_commit,
-                                    Json::null,
-                                    cur_view_.viewno.value(),
-                                    (first_logno_ + log_.size()).value()));
+        process_at_number(first_logno_ + log_.size(), at_store_);
+        who->send(Json::array((int) m_vri_commit,
+                              Json::null,
+                              cur_view_.viewno.value(),
+                              (first_logno_ + log_.size()).value()));
     }
 }
 
@@ -623,6 +688,7 @@ void Vrgroup::update_commitno(lognumber_t commitno) {
         msg.push_back(li.client_seqno).push_back(li.request);
     }
     commitno_ = commitno;
+    process_at_number(commitno_, at_commit_);
     for (auto it = messages.begin(); it != messages.end(); ++it) {
         Vrendpoint* ep = endpoints_[it->first];
         if (ep)
@@ -642,6 +708,9 @@ class Vrtestnode {
 
     inline const String& uid() const {
         return uid_;
+    }
+    inline Json name() const {
+        return Json::object("uid", uid_);
     }
     inline Vrtestlistener* listener() const {
         return listener_;
@@ -677,6 +746,7 @@ class Vrtestconnection : public Vrendpoint {
     inline void set_loss(double p);
     void send(Json msg);
     void receive(event<Json> done);
+    void close();
   private:
     Vrtestnode* from_node_;
     double delay_;
@@ -688,6 +758,7 @@ class Vrtestconnection : public Vrendpoint {
     tamer::event<> coroutine_;
     tamer::event<> kill_coroutine_;
     tamed void coroutine();
+    inline void do_send(Json msg);
     friend class Vrtestnode;
 };
 
@@ -716,21 +787,25 @@ Vrtestconnection* Vrtestnode::connect(Vrtestnode* n) {
 
 Vrtestconnection::Vrtestconnection(Vrtestnode* from, Vrtestnode* to)
     : Vrendpoint(from->uid(), to->uid()), from_node_(from),
-      delay_(0), loss_p_(0) {
+      delay_(0.1), loss_p_(0) {
     coroutine();
 }
 
 Vrtestconnection::~Vrtestconnection() {
+    close();
+    while (!w_.empty()) {
+        w_.front().unblock();
+        w_.pop_front();
+    }
+    q_.clear();
+}
+
+void Vrtestconnection::close() {
     coroutine_();
     kill_coroutine_();
-    if (peer_) {
+    if (peer_)
         peer_->peer_ = 0;
-        while (!w_.empty()) {
-            w_.front().unblock();
-            w_.pop_front();
-        }
-        q_.clear();
-    }
+    peer_ = 0;
 }
 
 void Vrtestconnection::set_delay(double d) {
@@ -742,36 +817,38 @@ void Vrtestconnection::set_loss(double p) {
     loss_p_ = (unsigned long) (p * ((unsigned long) RAND_MAX + 1));
 }
 
-void Vrtestconnection::send(Json msg) {
-    if ((!loss_p_ || (unsigned long) random() >= loss_p_)
-        && peer_) {
-        if (!w_.empty()
-            && q_.empty()
-            && delay_ <= 0) {
-            w_.front()(std::move(msg));
-            w_.pop_front();
-        } else {
-            q_.push_back(std::make_pair(tamer::drecent() + delay_,
-                                        std::move(msg)));
-            if (!w_.empty())
-                coroutine_();
-        }
+inline void Vrtestconnection::do_send(Json msg) {
+    while (!w_.empty() && !w_.front())
+        w_.pop_front();
+    if (!w_.empty()
+        && q_.empty()
+        && delay_ <= 0) {
+        w_.front()(std::move(msg));
+        w_.pop_front();
+    } else {
+        q_.push_back(std::make_pair(tamer::drecent() + delay_,
+                                    std::move(msg)));
+        if (!w_.empty())
+            coroutine_();
     }
 }
 
+void Vrtestconnection::send(Json msg) {
+    if ((!loss_p_ || (unsigned long) random() >= loss_p_) && peer_)
+        peer_->do_send(std::move(msg));
+}
+
 void Vrtestconnection::receive(event<Json> done) {
-    if (peer_) {
-        double now = tamer::drecent();
-        if (peer_->w_.empty()
-            && !peer_->q_.empty()
-            && peer_->q_.front().first <= now) {
-            done(std::move(peer_->q_.front().second));
-            peer_->q_.pop_front();
-        } else {
-            peer_->w_.push_back(std::move(done));
-            if (!peer_->q_.empty())
-                peer_->coroutine_();
-        }
+    double now = tamer::drecent();
+    if (w_.empty()
+        && !q_.empty()
+        && q_.front().first <= now) {
+        done(std::move(q_.front().second));
+        q_.pop_front();
+    } else if (peer_) {
+        w_.push_back(std::move(done));
+        if (!q_.empty())
+            coroutine_();
     } else
         done(Json());
 }
@@ -783,10 +860,10 @@ tamed void Vrtestconnection::coroutine() {
     }
     kill_coroutine_ = kill = rendez.make_event();
     while (kill) {
-        if (!w_.empty() && !w_.front())
+        while (!w_.empty() && !w_.front())
             w_.pop_front();
-        else if (!w_.empty() && !q_.empty()
-                 && tamer::drecent() >= q_.front().first) {
+        if (!w_.empty() && !q_.empty()
+            && tamer::drecent() >= q_.front().first) {
             w_.front()(std::move(q_.front().second));
             w_.pop_front();
             q_.pop_front();
@@ -833,17 +910,31 @@ void Vrendpoint::receive(event<Json>) {
     assert(0);
 }
 
-void Vrendpoint::print_receive(const Json& message, const String& extra) {
+void Vrendpoint::close() {
+}
+
+void Vrendpoint::print_message(bool issend, const Json& message,
+                               const String& extra) {
     std::cout << tamer::now() << ":"
-              << local_uid() << " <- " << remote_uid()
-              << ": recv " << message;
+              << local_uid() << (issend ? " -> " : " <- ") << remote_uid();
+    if (connection_uid())
+        std::cout << " (" << connection_uid() << ")";
+    std::cout << (issend ? ": send " : ": recv ") << message;
     if (extra)
         std::cout << " " << extra;
     std::cout << "\n";
 }
 
+void Vrendpoint::print_send(const Json& message, const String& extra) {
+    print_message(true, message, extra);
+}
+
+void Vrendpoint::print_receive(const Json& message, const String& extra) {
+    print_message(false, message, extra);
+}
+
 void Vrendpoint::print_receive(const Json& message, const Json& extra) {
-    print_receive(message, extra.is_null() ? String() : extra.unparse());
+    print_message(false, message, extra.is_null() ? String() : extra.unparse());
 }
 
 #if 0
@@ -1015,26 +1106,39 @@ tamed void go() {
         groups.push_back(new Vrgroup(nodes[i]->uid(), nodes[i]->listener()));
     for (int i = 0; i < 5; ++i)
         groups[i]->dump(std::cout);
-    twait { groups[0]->join(Json::object("uid", nodes[1]->uid()),
-                            tamer::rebind<Vrendpoint*>(make_event())); }
+    twait { groups[0]->join(nodes[1]->name(), make_event()); }
     for (int i = 0; i < 5; ++i)
         groups[i]->dump(std::cout);
-    twait { tamer::at_delay_usec(10000, make_event()); }
+    twait {
+        groups[0]->at_view(1, make_event());
+        groups[1]->at_view(1, make_event());
+    }
+
     for (int i = 0; i < 5; ++i)
         groups[i]->dump(std::cout);
-    twait { groups[2]->join(Json::object("uid", nodes[0]->uid()),
-                            tamer::rebind<Vrendpoint*>(make_event())); }
-    twait { tamer::at_delay_usec(10000, make_event()); }
+    twait { groups[2]->join(nodes[0]->name(), make_event()); }
+    twait {
+        groups[0]->at_view(2, make_event());
+        groups[1]->at_view(2, make_event());
+        groups[2]->at_view(2, make_event());
+    }
+
     for (int i = 0; i < 5; ++i)
         groups[i]->dump(std::cout);
-    twait { groups[4]->join(Json::object("uid", nodes[0]->uid()),
-                            tamer::rebind<Vrendpoint*>(make_event())); }
-    twait { tamer::at_delay_usec(10000, make_event()); }
+    twait { groups[4]->join(nodes[0]->name(), make_event()); }
+    twait {
+        groups[0]->at_view(3, make_event());
+        groups[1]->at_view(3, make_event());
+        groups[2]->at_view(3, make_event());
+        groups[4]->at_view(3, make_event());
+    }
     for (int i = 0; i < 5; ++i)
         groups[i]->dump(std::cout);
 
     client = new Vrtestnode(Vrendpoint::make_client_uid(), nodes);
     client_conn = client->connect(nodes[4]);
+    client_conn->send(Json::array((int) m_vri_handshake, Json::null, random_string()));
+    twait { client_conn->receive(make_event(j)); }
     client_conn->send(Json::array((int) m_vri_request,
                                   Json::null,
                                   1, "req"));
