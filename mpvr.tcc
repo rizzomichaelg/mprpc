@@ -214,7 +214,7 @@ Json Vrgroup::view_type::commits_json() const {
     for (auto it = members.begin(); it != members.end(); ++it) {
         Json x = Json::array(it->uid);
         if (it->has_storeno)
-            x.push_back(it->storeno).push_back(it->store_count);
+            x.push_back(it->storeno.value()).push_back(it->store_count);
         bool is_primary = it - members.begin() == primary_index;
         bool is_me = it - members.begin() == my_index;
         if (is_primary || is_me)
@@ -229,11 +229,11 @@ void Vrgroup::view_type::account_commit(view_member* peer, lognumber_t storeno) 
     peer->storeno = storeno;
     peer->store_count = 0;
     for (auto it = members.begin(); it != members.end(); ++it) {
-        if (!logno_greater(it->storeno, storeno)
-            && logno_greater(it->storeno, old_storeno)
+        if (it->storeno <= storeno
+            && it->storeno > old_storeno
             && &*it != peer)
             ++it->store_count;
-        if (!logno_greater(storeno, it->storeno))
+        if (storeno <= it->storeno)
             ++peer->store_count;
     }
 }
@@ -245,7 +245,7 @@ bool Vrgroup::view_type::account_all_commits() {
         it->store_count = 0;
         for (auto jt = members.begin(); jt != members.end(); ++jt)
             if (it->has_storeno && jt->has_storeno
-                && !logno_greater(it->storeno, jt->storeno))
+                && it->storeno <= jt->storeno)
                 ++it->store_count;
         changed = changed || it->store_count != old_store_count;
     }
@@ -440,13 +440,13 @@ void Vrgroup::process_view_log_transfer(Json& payload) {
     lognumber_t last_logno = payload["storeno"].to_u();
     lognumber_t logno = last_logno - payload["log"].size() / 4;
     const Json& log = payload["log"];
-    assert(!logno_less(logno, first_logno_));
+    assert(logno >= first_logno_);
     for (int i = 0; i != log.size(); i += 4, ++logno) {
         log_item li(log[i].to_u(), log[i+1].to_s(), log[i+2].to_u(), log[i+3]);
         auto it = log_.begin() + (logno - first_logno_);
         if (it == log_.end())
             log_.push_back(std::move(li));
-        else if (viewno_less(it->viewno, li.viewno))
+        else if (it->viewno < li.viewno)
             *it = std::move(li);
         else if (it->viewno == li.viewno)
             assert(it->client_uid == li.client_uid
@@ -455,11 +455,11 @@ void Vrgroup::process_view_log_transfer(Json& payload) {
 }
 
 Json Vrgroup::view_payload(const String& peer_uid) {
-    Json payload = Json::object("viewno", next_view_.viewno,
+    Json payload = Json::object("viewno", next_view_.viewno.value(),
                                 "members", next_view_.members_json(),
                                 "primary", next_view_.primary_index,
-                                "commitno", commitno_,
-                                "storeno", first_logno_ + log_.size());
+                                "commitno", commitno_.value(),
+                                "storeno", (first_logno_ + log_.size()).value());
     if (next_view_.viewno != cur_view_.viewno) {
         auto it = next_view_.members.begin();
         while (it != next_view_.members.end() && it->uid != peer_uid)
@@ -475,12 +475,12 @@ Json Vrgroup::view_payload(const String& peer_uid) {
         if (!next_view_.me_primary()
             && next_view_.primary().has_storeno) {
             lognumber_t logno = next_view_.primary().storeno;
-            assert(!logno_less(logno, first_logno_)
-                   && !logno_less(first_logno_ + log_.size(), logno));
+            assert(logno >= first_logno_
+                   && first_logno_ + log_.size() >= logno);
             Json log = Json::array();
             for (auto it = log_.begin() + (logno - first_logno_);
                  it != log_.end(); ++it)
-                log.push_back_list(it->viewno,
+                log.push_back_list(it->viewno.value(),
                                    it->client_uid,
                                    it->client_seqno,
                                    it->request);
@@ -536,9 +536,9 @@ void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
     else {
         Json commit = Json::array((int) m_vri_commit,
                                   Json::null,
-                                  cur_view_.viewno,
-                                  commitno_,
-                                  first_logno_ + log_.size());
+                                  cur_view_.viewno.value(),
+                                  commitno_.value(),
+                                  (first_logno_ + log_.size()).value());
         unsigned seqno = msg[2].to_u64();
         for (int i = 3; i != msg.size(); ++i, ++seqno) {
             log_.emplace_back(cur_view_.viewno, who->remote_uid(),
@@ -575,7 +575,7 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
     if (msg.size() < 4
         || (msg.size() > 5 && (msg.size() - 5) % 3 != 0)
         || !msg[2].is_u()
-        || msg[2].to_u() != cur_view_.viewno
+        || viewnumber_t(msg[2].to_u()) != cur_view_.viewno
         || between_views()
         || !msg[3].is_u()
         || (is_primary()
@@ -589,7 +589,7 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
         cur_view_.account_commit(peer, commitno);
         assert(!cur_view_.account_all_commits());
         if (peer->store_count > cur_view_.f()
-            && logno_greater(commitno, commitno_))
+            && commitno > commitno_)
             update_commitno(commitno);
     } else
         commitno_ = commitno;
@@ -597,7 +597,7 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
     if (!is_primary() && msg.size() > 5) {
         lognumber_t logno = msg[4].to_u();
         for (int i = 5; i != msg.size(); i += 3, ++logno)
-            if (!logno_greater(commitno_, logno)) {
+            if (commitno_ <= logno) {
                 size_t logpos = logno - first_logno_;
                 while (logpos >= log_.size())
                     log_.push_back(log_item());
@@ -608,15 +608,15 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
             }
         primary()->send(Json::array((int) m_vri_commit,
                                     Json::null,
-                                    cur_view_.viewno,
-                                    first_logno_ + log_.size()));
+                                    cur_view_.viewno.value(),
+                                    (first_logno_ + log_.size()).value()));
     }
 }
 
 void Vrgroup::update_commitno(lognumber_t commitno) {
     std::unordered_map<String, Json> messages;
-    for (size_t i = commitno_; i != commitno; ++i) {
-        log_item& li = log_[i - first_logno_];
+    for (size_t i = commitno_.value(); i != commitno.value(); ++i) {
+        log_item& li = log_[i - first_logno_.value()];
         Json& msg = messages[li.client_uid];
         if (!msg)
             msg = Json::array((int) m_vri_response, Json::null);

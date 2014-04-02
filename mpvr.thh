@@ -2,6 +2,7 @@
 #ifndef MPVR_THH
 #define MPVR_THH 1
 #include "string.hh"
+#include "circular_int.hh"
 #include <unordered_map>
 #include <iostream>
 using tamer::event;
@@ -50,10 +51,10 @@ class Vrendpoint {
 
 class Vrgroup {
   public:
-    typedef unsigned viewnumber_t;
-    typedef int viewnumberdiff_t;
-    typedef unsigned lognumber_t;
-    typedef int lognumberdiff_t;
+    typedef circular_int<unsigned> viewnumber_t;
+    typedef viewnumber_t::difference_type viewnumberdiff_t;
+    typedef circular_int<unsigned> lognumber_t;
+    typedef lognumber_t::difference_type lognumberdiff_t;
 
     Vrgroup(const String& group_name, Vrendpoint* me);
 
@@ -168,19 +169,6 @@ class Vrgroup {
     std::deque<log_item> log_;
 
     bool next_view_sent_confirm_;
-
-    static inline bool logno_less(lognumber_t a, lognumber_t b) {
-        return (lognumberdiff_t) (a - b) < 0;
-    }
-    static inline bool logno_greater(lognumber_t a, lognumber_t b) {
-        return (lognumberdiff_t) (a - b) > 0;
-    }
-    static inline bool viewno_less(viewnumber_t a, viewnumber_t b) {
-        return (viewnumberdiff_t) (a - b) < 0;
-    }
-    static inline bool viewno_greater(viewnumber_t a, viewnumber_t b) {
-        return (viewnumberdiff_t) (a - b) > 0;
-    }
 
     Vrendpoint* primary(const view_type& v) const;
     inline Vrendpoint* primary() const {
