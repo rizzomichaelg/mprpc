@@ -25,6 +25,7 @@ class Vrendpoint {
         return connection_version_;
     }
     virtual Json local_name() const;
+    virtual Json remote_name() const;
 
     static String make_client_uid();
     static String make_replica_uid();
@@ -93,7 +94,8 @@ class Vrgroup {
         unsigned store_count;
         explicit view_member(Json peer_name)
             : uid(peer_name["uid"].to_s()), peer_name(peer_name),
-              acked(false), confirmed(false), has_storeno(false) {
+              acked(false), confirmed(false),
+              has_storeno(false), store_count(0) {
         }
     };
 
@@ -146,6 +148,7 @@ class Vrgroup {
 
     Vrendpoint* me_;
     mutable std::unordered_map<String, Vrendpoint*> endpoints_;
+    mutable std::unordered_map<String, tamer::event<Vrendpoint*> > in_progress_;
 
     struct log_item {
         viewnumber_t viewno;
@@ -197,6 +200,7 @@ class Vrgroup {
     void send_view(Vrendpoint* who, Json payload = Json(), Json seqno = Json());
     tamed void send_view(Json peer);
     void broadcast_view();
+    void process_join(Vrendpoint* who, const Json& msg);
     void process_view(Vrendpoint* who, const Json& msg);
     void process_view_log_transfer(Json& payload);
     void process_request(Vrendpoint* who, const Json& msg);
