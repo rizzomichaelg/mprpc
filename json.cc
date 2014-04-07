@@ -360,6 +360,11 @@ Json::array_iterator Json::erase(array_iterator first, array_iterator last) {
     return first;
 }
 
+/** @brief Reserve the array Json to hold at least @a n items. */
+void Json::reserve(size_type n) {
+    uniqueify_array(false, n);
+}
+
 /** @brief Resize the array Json to size @a n. */
 void Json::resize(size_type n) {
     uniqueify_array(false, n);

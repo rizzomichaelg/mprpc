@@ -244,6 +244,7 @@ class Json {
     array_iterator erase(array_iterator first, array_iterator last);
     inline array_iterator erase(array_iterator position);
 
+    void reserve(size_type n);
     void resize(size_type n);
 
     inline Json* array_data();
