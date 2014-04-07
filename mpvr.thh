@@ -4,6 +4,7 @@
 #include "string.hh"
 #include "circular_int.hh"
 #include <unordered_map>
+#include <random>
 #include <iostream>
 using tamer::event;
 
@@ -65,7 +66,7 @@ class Vrnode {
     typedef circular_int<unsigned> lognumber_t;
     typedef lognumber_t::difference_type lognumberdiff_t;
 
-    Vrnode(const String& group_name, Vrchannel* me);
+    Vrnode(const String& group_name, Vrchannel* me, std::mt19937& rg);
 
     String group_name() const {
         return group_name_;
@@ -193,6 +194,7 @@ class Vrnode {
 
     double commit_sent_at_;
     double primary_received_at_;
+    std::mt19937& rg_;
 
     inline bool is_primary() const {
         return cur_view_.me_primary();
@@ -204,6 +206,10 @@ class Vrnode {
     inline bool between_views() const {
         return cur_view_.viewno != next_view_.viewno
             && next_view_sent_confirm_;
+    }
+    inline double rand01() const {
+        std::uniform_real_distribution<double> urd;
+        return urd(rg_);
     }
 
     String unparse_view_state() const;

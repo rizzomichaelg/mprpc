@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <set>
 #include <tamer/channel.hh>
 
 enum {
@@ -246,7 +247,7 @@ bool Vrnode::view_type::account_all_commits() {
 
 
 
-Vrnode::Vrnode(const String& group_name, Vrchannel* me)
+Vrnode::Vrnode(const String& group_name, Vrchannel* me, std::mt19937& rg)
     : group_name_(group_name), want_member_(!!me), me_(me),
       first_logno_(0),
       commitno_(0), complete_commitno_(0), broadcast_commitno_(0),
@@ -254,7 +255,8 @@ Vrnode::Vrnode(const String& group_name, Vrchannel* me)
       primary_keepalive_timeout_(1),
       backup_keepalive_timeout_(2),
       view_change_timeout_(0.5),
-      commit_sent_at_(0) {
+      commit_sent_at_(0),
+      rg_(rg) {
     if (me_) {
         cur_view_ = view_type::make_singular(me_->local_name());
         endpoints_[me->local_uid()] = me;
@@ -317,7 +319,7 @@ tamed void Vrnode::connect(Json peer_name, event<> done) {
     connection_wait_[peer_uid] = std::move(done);
     // random delay to reduce likelihood of simultaneous connection,
     // which we currently handle poorly
-    twait { tamer::at_delay_usec(random() % 20000, make_event()); }
+    twait { tamer::at_delay(rand01() / 50, make_event()); }
 
     // connected during delay?
     if (endpoints_[peer_uid]) {
@@ -598,7 +600,7 @@ tamed void Vrnode::start_view_change() {
     broadcast_view();
 
     // kick off another view change if this one appears to fail
-    twait { tamer::at_delay(view_change_timeout_ * (1 + drand48() / 8),
+    twait { tamer::at_delay(view_change_timeout_ * (1 + rand01() / 8),
                             make_event()); }
     if (cur_view_.viewno < view) {
         std::cerr << tamer::recent() << ":" << uid() << ": timing out view "
@@ -751,7 +753,7 @@ tamed void Vrnode::backup_keepalive_loop() {
     tamed { viewnumber_t view = cur_view_.viewno; }
     primary_received_at_ = tamer::drecent();
     while (1) {
-        twait { tamer::at_delay(primary_keepalive_timeout_ * (0.375 + drand48() / 8),
+        twait { tamer::at_delay(primary_keepalive_timeout_ * (0.375 + rand01() / 8),
                                 make_event()); }
         if (next_view_.viewno != view)
             break;
@@ -775,199 +777,6 @@ void Vrnode::go() {
 
 
 // Vrchannel
-
-class Vrtestchannel;
-class Vrtestlistener;
-class Vrtestnode;
-
-class Vrtestcollection {
-  public:
-    std::vector<Vrtestnode*> nodes_;
-};
-
-class Vrtestnode {
-  public:
-    inline Vrtestnode(const String& uid, Vrtestcollection* collection);
-
-    inline const String& uid() const {
-        return uid_;
-    }
-    inline Json name() const {
-        return Json::object("uid", uid_);
-    }
-    inline Vrtestlistener* listener() const {
-        return listener_;
-    }
-
-    Vrtestnode* find(const String& uid) const;
-    Vrtestchannel* connect(Vrtestnode* x);
-
-  private:
-    String uid_;
-    Vrtestcollection* collection_;
-    Vrtestlistener* listener_;
-};
-
-class Vrtestlistener : public Vrchannel {
-  public:
-    inline Vrtestlistener(Vrtestnode* my_node)
-        : Vrchannel(my_node->uid(), String()), my_node_(my_node) {
-    }
-    void connect(Json def, event<Vrchannel*> done);
-    void receive_connection(event<Vrchannel*> done);
-  private:
-    Vrtestnode* my_node_;
-    tamer::channel<Vrchannel*> listenq_;
-    friend class Vrtestnode;
-};
-
-class Vrtestchannel : public Vrchannel {
-  public:
-    Vrtestchannel(Vrtestnode* from, Vrtestnode* to);
-    ~Vrtestchannel();
-    inline void set_delay(double d);
-    inline void set_loss(double p);
-    void send(Json msg);
-    void receive(event<Json> done);
-    void close();
-  private:
-    Vrtestnode* from_node_;
-    double delay_;
-    unsigned long loss_p_;
-    typedef std::pair<double, Json> message_t;
-    std::deque<message_t> q_;
-    std::deque<tamer::event<Json> > w_;
-    Vrtestchannel* peer_;
-    tamer::event<> coroutine_;
-    tamer::event<> kill_coroutine_;
-    tamed void coroutine();
-    inline void do_send(Json msg);
-    friend class Vrtestnode;
-};
-
-Vrtestnode::Vrtestnode(const String& uid, Vrtestcollection* collection)
-    : uid_(uid), collection_(collection) {
-    collection_->nodes_.push_back(this);
-    listener_ = new Vrtestlistener(this);
-}
-
-Vrtestnode* Vrtestnode::find(const String& uid) const {
-    for (auto x : collection_->nodes_)
-        if (x->uid() == uid)
-            return x;
-    return nullptr;
-}
-
-Vrtestchannel* Vrtestnode::connect(Vrtestnode* n) {
-    assert(n->uid() != uid());
-    Vrtestchannel* my = new Vrtestchannel(this, n);
-    Vrtestchannel* peer = new Vrtestchannel(n, this);
-    my->peer_ = peer;
-    peer->peer_ = my;
-    n->listener()->listenq_.push_back(peer);
-    return my;
-}
-
-Vrtestchannel::Vrtestchannel(Vrtestnode* from, Vrtestnode* to)
-    : Vrchannel(from->uid(), to->uid()), from_node_(from),
-      delay_(0.05 + 0.0125 * drand48()), loss_p_(0) {
-    coroutine();
-}
-
-Vrtestchannel::~Vrtestchannel() {
-    close();
-    while (!w_.empty()) {
-        w_.front().unblock();
-        w_.pop_front();
-    }
-    q_.clear();
-}
-
-void Vrtestchannel::close() {
-    coroutine_();
-    kill_coroutine_();
-    if (peer_)
-        peer_->peer_ = 0;
-    peer_ = 0;
-}
-
-void Vrtestchannel::set_delay(double d) {
-    delay_ = d;
-}
-
-void Vrtestchannel::set_loss(double p) {
-    assert(p >= 0 && p <= 1);
-    loss_p_ = (unsigned long) (p * ((unsigned long) RAND_MAX + 1));
-}
-
-inline void Vrtestchannel::do_send(Json msg) {
-    while (!w_.empty() && !w_.front())
-        w_.pop_front();
-    if (!w_.empty()
-        && q_.empty()
-        && delay_ <= 0) {
-        w_.front()(std::move(msg));
-        w_.pop_front();
-    } else {
-        q_.push_back(std::make_pair(tamer::drecent() + delay_,
-                                    std::move(msg)));
-        if (!w_.empty())
-            coroutine_();
-    }
-}
-
-void Vrtestchannel::send(Json msg) {
-    if ((!loss_p_ || (unsigned long) random() >= loss_p_) && peer_)
-        peer_->do_send(std::move(msg));
-}
-
-void Vrtestchannel::receive(event<Json> done) {
-    double now = tamer::drecent();
-    if (w_.empty()
-        && !q_.empty()
-        && q_.front().first <= now) {
-        done(std::move(q_.front().second));
-        q_.pop_front();
-    } else if (peer_) {
-        w_.push_back(std::move(done));
-        if (!q_.empty())
-            coroutine_();
-    } else
-        done(Json());
-}
-
-tamed void Vrtestchannel::coroutine() {
-    tvars {
-        tamer::event<> kill;
-        tamer::rendezvous<> rendez;
-    }
-    kill_coroutine_ = kill = rendez.make_event();
-    while (kill) {
-        while (!w_.empty() && !w_.front())
-            w_.pop_front();
-        if (!w_.empty() && !q_.empty()
-            && tamer::drecent() >= q_.front().first) {
-            w_.front()(std::move(q_.front().second));
-            w_.pop_front();
-            q_.pop_front();
-        } else if (!w_.empty() && !q_.empty())
-            twait { tamer::at_time(q_.front().first, make_event()); }
-        else
-            twait { coroutine_ = make_event(); }
-    }
-}
-
-void Vrtestlistener::connect(Json def, event<Vrchannel*> done) {
-    if (Vrtestnode* n = my_node_->find(def["uid"].to_s()))
-        done(my_node_->connect(n));
-    else
-        done(nullptr);
-}
-
-void Vrtestlistener::receive_connection(event<Vrchannel*> done) {
-    listenq_.pop_front(done);
-}
-
 
 Json Vrchannel::local_name() const {
     return Json::object("uid", local_uid());
@@ -1021,6 +830,220 @@ void Vrchannel::print_receive(const Json& message, const Json& extra) {
 }
 
 
+// Vrtestchannel
+
+class Vrtestchannel;
+class Vrtestlistener;
+class Vrtestnode;
+
+class Vrtestcollection {
+  public:
+    std::vector<Vrtestnode*> nodes_;
+    std::set<Vrtestchannel*> channels_;
+    mutable std::mt19937 rg_;
+
+    double rand01() const {
+        std::uniform_real_distribution<double> urd;
+        return urd(rg_);
+    }
+};
+
+class Vrtestnode {
+  public:
+    inline Vrtestnode(const String& uid, Vrtestcollection* collection);
+
+    inline const String& uid() const {
+        return uid_;
+    }
+    inline Json name() const {
+        return Json::object("uid", uid_);
+    }
+    inline Vrtestlistener* listener() const {
+        return listener_;
+    }
+    inline Vrtestcollection* collection() const {
+        return collection_;
+    }
+
+    Vrtestnode* find(const String& uid) const;
+    Vrtestchannel* connect(Vrtestnode* x);
+
+  private:
+    String uid_;
+    Vrtestcollection* collection_;
+    Vrtestlistener* listener_;
+};
+
+class Vrtestlistener : public Vrchannel {
+  public:
+    inline Vrtestlistener(Vrtestnode* my_node)
+        : Vrchannel(my_node->uid(), String()), my_node_(my_node) {
+        set_connection_uid(my_node->uid());
+    }
+    void connect(Json def, event<Vrchannel*> done);
+    void receive_connection(event<Vrchannel*> done);
+  private:
+    Vrtestnode* my_node_;
+    tamer::channel<Vrchannel*> listenq_;
+    friend class Vrtestnode;
+};
+
+class Vrtestchannel : public Vrchannel {
+  public:
+    Vrtestchannel(Vrtestnode* from, Vrtestnode* to);
+    ~Vrtestchannel();
+    inline void set_delay(double d);
+    inline void set_loss(double p);
+    inline Vrtestcollection* collection() const {
+        return from_node_->collection();
+    }
+    void send(Json msg);
+    void receive(event<Json> done);
+    void close();
+  private:
+    Vrtestnode* from_node_;
+    double delay_;
+    double loss_p_;
+    typedef std::pair<double, Json> message_t;
+    std::deque<message_t> q_;
+    std::deque<tamer::event<Json> > w_;
+    Vrtestchannel* peer_;
+    tamer::event<> coroutine_;
+    tamer::event<> kill_coroutine_;
+    tamed void coroutine();
+    inline void do_send(Json msg);
+    friend class Vrtestnode;
+};
+
+Vrtestnode::Vrtestnode(const String& uid, Vrtestcollection* collection)
+    : uid_(uid), collection_(collection) {
+    collection_->nodes_.push_back(this);
+    listener_ = new Vrtestlistener(this);
+}
+
+Vrtestnode* Vrtestnode::find(const String& uid) const {
+    for (auto x : collection_->nodes_)
+        if (x->uid() == uid)
+            return x;
+    return nullptr;
+}
+
+Vrtestchannel* Vrtestnode::connect(Vrtestnode* n) {
+    assert(n->uid() != uid());
+    Vrtestchannel* my = new Vrtestchannel(this, n);
+    Vrtestchannel* peer = new Vrtestchannel(n, this);
+    my->peer_ = peer;
+    peer->peer_ = my;
+    n->listener()->listenq_.push_back(peer);
+    collection_->channels_.insert(my);
+    collection_->channels_.insert(peer);
+    return my;
+}
+
+Vrtestchannel::Vrtestchannel(Vrtestnode* from, Vrtestnode* to)
+    : Vrchannel(from->uid(), to->uid()), from_node_(from),
+      delay_(0.05 + 0.0125 * from->collection()->rand01()), loss_p_(0) {
+    coroutine();
+}
+
+Vrtestchannel::~Vrtestchannel() {
+    close();
+    while (!w_.empty()) {
+        w_.front().unblock();
+        w_.pop_front();
+    }
+    q_.clear();
+    from_node_->collection()->channels_.erase(this);
+}
+
+void Vrtestchannel::close() {
+    coroutine_();
+    kill_coroutine_();
+    if (peer_)
+        peer_->peer_ = 0;
+    peer_ = 0;
+}
+
+void Vrtestchannel::set_delay(double d) {
+    delay_ = d;
+}
+
+void Vrtestchannel::set_loss(double p) {
+    assert(p >= 0 && p <= 1);
+    loss_p_ = p;
+}
+
+inline void Vrtestchannel::do_send(Json msg) {
+    while (!w_.empty() && !w_.front())
+        w_.pop_front();
+    if (!w_.empty()
+        && q_.empty()
+        && delay_ <= 0) {
+        w_.front()(std::move(msg));
+        w_.pop_front();
+    } else {
+        q_.push_back(std::make_pair(tamer::drecent() + delay_,
+                                    std::move(msg)));
+        if (!w_.empty())
+            coroutine_();
+    }
+}
+
+void Vrtestchannel::send(Json msg) {
+    if ((!loss_p_ || collection()->rand01() >= loss_p_) && peer_)
+        peer_->do_send(std::move(msg));
+}
+
+void Vrtestchannel::receive(event<Json> done) {
+    double now = tamer::drecent();
+    if (w_.empty()
+        && !q_.empty()
+        && q_.front().first <= now) {
+        done(std::move(q_.front().second));
+        q_.pop_front();
+    } else if (peer_) {
+        w_.push_back(std::move(done));
+        if (!q_.empty())
+            coroutine_();
+    } else
+        done(Json());
+}
+
+tamed void Vrtestchannel::coroutine() {
+    tvars {
+        tamer::event<> kill;
+        tamer::rendezvous<> rendez;
+    }
+    kill_coroutine_ = kill = rendez.make_event();
+    while (kill) {
+        while (!w_.empty() && !w_.front())
+            w_.pop_front();
+        if (!w_.empty() && !q_.empty()
+            && tamer::drecent() >= q_.front().first) {
+            w_.front()(std::move(q_.front().second));
+            w_.pop_front();
+            q_.pop_front();
+        } else if (!w_.empty() && !q_.empty())
+            twait { tamer::at_time(q_.front().first, make_event()); }
+        else
+            twait { coroutine_ = make_event(); }
+    }
+}
+
+void Vrtestlistener::connect(Json def, event<Vrchannel*> done) {
+    if (Vrtestnode* n = my_node_->find(def["uid"].to_s()))
+        done(my_node_->connect(n));
+    else
+        done(nullptr);
+}
+
+void Vrtestlistener::receive_connection(event<Vrchannel*> done) {
+    listenq_.pop_front(done);
+}
+
+
+
+
 tamed void go() {
     tamed {
         Vrtestcollection vrg;
@@ -1033,7 +1056,8 @@ tamed void go() {
         new Vrtestnode(Vrchannel::make_replica_uid(), &vrg);
     for (int i = 0; i < 5; ++i)
         nodes.push_back(new Vrnode(vrg.nodes_[i]->uid(),
-                                   vrg.nodes_[i]->listener()));
+                                   vrg.nodes_[i]->listener(),
+                                   vrg.rg_));
     for (int i = 0; i < 5; ++i)
         nodes[i]->dump(std::cout);
     twait { nodes[0]->join(vrg.nodes_[1]->name(), make_event()); }
