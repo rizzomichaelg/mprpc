@@ -95,11 +95,6 @@ bool Vrgroup::view_type::assign(Json msg, const String& my_uid) {
         if (uid == my_uid)
             my_index = it - membersj.abegin();
         members.push_back(view_member(*it));
-        /*else if (!it->get("addr").is_string()
-          || !it->get("port").is_int()
-          || it->get("port").to_i() <= 0
-                 || it->get("port").to_i() > 65535)
-                 return false;*/
     }
 
     return true;
@@ -189,15 +184,19 @@ void Vrgroup::view_type::add(Json peer_name, const String& my_uid) {
     if (it == members.end() || it->uid != peer_uid)
         members.insert(it, view_member(peer_name));
 
-    clear_preparation();
-    ++viewno;
-    if (!viewno)
-        ++viewno;
-
     my_index = -1;
     for (size_t i = 0; i != members.size(); ++i)
         if (members[i].uid == my_uid)
             my_index = i;
+
+    advance();
+}
+
+void Vrgroup::view_type::advance() {
+    clear_preparation();
+    ++viewno;
+    if (!viewno)
+        ++viewno;
     primary_index = viewno % members.size();
 }
 
@@ -249,7 +248,13 @@ bool Vrgroup::view_type::account_all_commits() {
 
 Vrgroup::Vrgroup(const String& group_name, Vrendpoint* me)
     : group_name_(group_name), want_member_(!!me), me_(me),
-      first_logno_(0), commitno_(0) {
+      first_logno_(0),
+      commitno_(0), complete_commitno_(0), broadcast_commitno_(0),
+      stopped_(false),
+      primary_keepalive_timeout_(1),
+      backup_keepalive_timeout_(2),
+      view_change_timeout_(0.5),
+      commit_sent_at_(0) {
     if (me_) {
         cur_view_ = view_type::make_singular(me_->local_name());
         endpoints_[me->local_uid()] = me;
@@ -320,7 +325,8 @@ tamed void Vrgroup::connect(Json peer_name, event<> done) {
         return;
     }
 
-    std::cerr << uid() << ": connect: connecting to " << peer_uid << "\n";
+    std::cerr << tamer::now() << ":" << uid() << ": connect: connecting to "
+              << peer_uid << "\n";
     twait { me_->connect(peer_name, make_event(peer)); }
     if (peer) {
         assert(peer->remote_uid() == peer_uid);
@@ -359,20 +365,18 @@ tamed void Vrgroup::connection_loop(Vrendpoint* peer, bool active_end) {
                || peer->connection_uid() == handshake_value);
         peer->set_connection_uid(handshake_value);
         if (endpoints_[peer_uid]) {
-            String hv[2] = { endpoints_[peer_uid]->connection_uid(),
-                             handshake_value };
-            std::cerr << uid() << ": dropping "
-                      << (hv[0] < hv[1] ? "new" : "old")
-                      << " redundant connection to " << peer_uid
-                      << " [drop " << hv[hv[0] < hv[1]]
-                      << ", keep " << hv[hv[0] >= hv[1]] << "]\n";
-            if (hv[0] < hv[1]) {
-                delete peer;
-                return;
-            } else
+            String old_cuid = endpoints_[peer_uid]->connection_uid();
+            std::cerr << tamer::recent() << ":" << uid() << " <-> " << peer_uid
+                      << " (" << handshake_value << "): ";
+            if (old_cuid < handshake_value)
+                std::cerr << "preferring old connection (" << old_cuid << ")\n";
+            else {
+                std::cerr << "dropping old connection (" << old_cuid << ")\n";
                 endpoints_[peer_uid]->close();
-        }
-        endpoints_[peer_uid] = peer;
+                endpoints_[peer_uid] = peer;
+            }
+        } else
+            endpoints_[peer_uid] = peer;
         connection_wait_[peer_uid]();
         connection_wait_.erase(peer_uid);
         if (!active_end)
@@ -387,6 +391,8 @@ tamed void Vrgroup::connection_loop(Vrendpoint* peer, bool active_end) {
         twait { peer->receive(make_event(msg)); }
         if (!msg || !msg.is_a() || msg.size() < 2 || !msg[0].is_i())
             break;
+        if (stopped_) // ignore message
+            continue;
         peer->print_receive(msg, unparse_view_state());
         if (msg[0] == m_vri_request)
             process_request(peer, msg);
@@ -398,6 +404,8 @@ tamed void Vrgroup::connection_loop(Vrendpoint* peer, bool active_end) {
             process_view(peer, msg);
     }
 
+    std::cerr << tamer::recent() << ":" << uid() << " <-> " << peer_uid
+              << " (" << peer->connection_uid() << "): connection closed\n";
     if (endpoints_[peer_uid] == peer)
         endpoints_.erase(peer_uid);
     delete peer;
@@ -439,15 +447,14 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
         || (vdiff == 0 && v != next_view_)
         || !next_view_.shared_quorum(v))
         want_send = true;
-    else if (vdiff == 0 && cur_view_.viewno == next_view_.viewno)
-        return;
     else if (vdiff == 0) {
         cur_view_.prepare(who->remote_uid(), payload);
         next_view_.prepare(who->remote_uid(), payload);
         if (payload["adopt"]) {
-            next_view_.clear_preparation();
+            assert(!next_view_.me_primary());
             cur_view_ = next_view_;
             process_at_number(cur_view_.viewno, at_view_);
+            backup_keepalive_loop();
             return;
         }
         if (payload["log"] && next_view_.me_primary())
@@ -470,20 +477,19 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
         && (next_view_.me_primary()
             || next_view_.primary().acked)
         && !next_view_sent_confirm_) {
-        if (!next_view_.me_primary()) {
-            send_view(next_view_.primary_uid());
-            want_send = want_send && !next_view_.me_primary();
-        } else
+        if (next_view_.me_primary())
             next_view_.prepare(uid(), Json::object("confirm", true));
+        else
+            send_view(next_view_.primary_uid());
         next_view_sent_confirm_ = true;
     }
     if (next_view_.nconfirmed > next_view_.f()
         && next_view_.me_primary()) {
         next_view_.account_all_commits();
         broadcast_view();
-        next_view_.clear_preparation();
         cur_view_ = next_view_;
         process_at_number(cur_view_.viewno, at_view_);
+        primary_keepalive_loop();
     } else if (want_send)
         send_view(who);
 }
@@ -516,32 +522,31 @@ Json Vrgroup::view_payload(const String& peer_uid) {
                                 "primary", next_view_.primary_index,
                                 "commitno", commitno_.value(),
                                 "storeno", (first_logno_ + log_.size()).value());
-    if (next_view_.viewno != cur_view_.viewno) {
-        auto it = next_view_.members.begin();
-        while (it != next_view_.members.end() && it->uid != peer_uid)
-            ++it;
-        if (it != next_view_.members.end() && it->acked)
-            payload["ack"] = true;
-        if (cur_view_.nacked > cur_view_.f()
-            && next_view_.nacked > next_view_.f())
-            payload["confirm"] = true;
-        if (next_view_.nconfirmed > next_view_.f()
-            && next_view_.me_primary())
-            payload["adopt"] = true;
-        if (!next_view_.me_primary()
-            && next_view_.primary().has_storeno) {
-            lognumber_t logno = next_view_.primary().storeno;
-            assert(logno >= first_logno_
-                   && first_logno_ + log_.size() >= logno);
-            Json log = Json::array();
-            for (auto it = log_.begin() + (logno - first_logno_);
-                 it != log_.end(); ++it)
-                log.push_back_list(it->viewno.value(),
-                                   it->client_uid,
-                                   it->client_seqno,
-                                   it->request);
-            payload["log"] = log;
-        }
+    auto it = next_view_.members.begin();
+    while (it != next_view_.members.end() && it->uid != peer_uid)
+        ++it;
+    if (it != next_view_.members.end() && it->acked)
+        payload["ack"] = true;
+    if (cur_view_.nacked > cur_view_.f()
+        && next_view_.nacked > next_view_.f())
+        payload["confirm"] = true;
+    if (next_view_.nconfirmed > next_view_.f()
+        && next_view_.me_primary())
+        payload["adopt"] = true;
+    if (next_view_.viewno != cur_view_.viewno
+        && !next_view_.me_primary()
+        && next_view_.primary().has_storeno) {
+        lognumber_t logno = next_view_.primary().storeno;
+        assert(logno >= first_logno_
+               && first_logno_ + log_.size() >= logno);
+        Json log = Json::array();
+        for (auto it = log_.begin() + (logno - first_logno_);
+             it != log_.end(); ++it)
+            log.push_back_list(it->viewno.value(),
+                               it->client_uid,
+                               it->client_seqno,
+                               it->request);
+        payload["log"] = log;
     }
     return payload;
 }
@@ -561,9 +566,8 @@ tamed void Vrgroup::send_view(Json peer_name) {
     }
     peer_uid = (peer_name.is_s() ? peer_name : peer_name["uid"]).to_s();
     payload = view_payload(peer_uid);
-    while (!(ep = endpoints_[peer_uid])) {
-        std::cerr << "." << peer_uid << "/" << uid() << ".";
-        twait { connect(peer_name, make_event()); }}
+    while (!(ep = endpoints_[peer_uid]))
+        twait { connect(peer_name, make_event()); }
     if (ep != me_)
         send_view(ep, payload);
 }
@@ -577,13 +581,17 @@ void Vrgroup::broadcast_view() {
 void Vrgroup::process_join(Vrendpoint* who, const Json&) {
     view_type v;
     if (!next_view_.count(who->remote_uid())) {
-        cur_view_.clear_preparation();
         next_view_.add(who->remote_name(), uid());
-        next_view_sent_confirm_ = false;
-        cur_view_.prepare(uid(), Json());
-        next_view_.prepare(uid(), Json());
-        broadcast_view();
+        start_view_change();
     }
+}
+
+void Vrgroup::start_view_change() {
+    cur_view_.clear_preparation();
+    next_view_sent_confirm_ = false;
+    cur_view_.prepare(uid(), Json());
+    next_view_.prepare(uid(), Json());
+    broadcast_view();
 }
 
 void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
@@ -592,21 +600,13 @@ void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
     else if (!is_primary() || between_views())
         send_view(who, Json(), msg[1]);
     else {
-        Json commit = Json::array((int) m_vri_commit,
-                                  Json::null,
-                                  cur_view_.viewno.value(),
-                                  commitno_.value(),
-                                  (first_logno_ + log_.size()).value());
+        lognumber_t from_storeno = first_logno_ + log_.size();
         unsigned seqno = msg[2].to_u64();
-        for (int i = 3; i != msg.size(); ++i, ++seqno) {
+        for (int i = 3; i != msg.size(); ++i, ++seqno)
             log_.emplace_back(cur_view_.viewno, who->remote_uid(),
                               seqno, msg[i]);
-            commit.push_back(who->remote_uid());
-            commit.push_back(seqno);
-            commit.push_back(msg[3]);
-        }
-        process_at_number(first_logno_ + log_.size(), at_store_);
-        broadcast_peers(commit);
+        process_at_number(from_storeno, at_store_);
+        broadcast_commit(from_storeno);
 
         // the new commits are replicated only here
         view_member* my_member = &cur_view_.primary();
@@ -615,21 +615,37 @@ void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
     }
 }
 
-tamed void Vrgroup::send_peer(Json peer_name, Json msg) {
+tamed void Vrgroup::send_commit(Json peer_name, Json msg) {
     tamed {
         String peer_uid = peer_name["uid"].to_s();
         Vrendpoint* ep;
     }
     while (!(ep = endpoints_[peer_uid]))
         twait { connect(peer_name, make_event()); }
+    // XXX add elements from log if rebroadcasting
     if (ep != me_)
         ep->send(msg);
 }
 
-void Vrgroup::broadcast_peers(Json msg) {
+void Vrgroup::broadcast_commit(lognumber_t from_storeno) {
+    assert(is_primary());
+    Json msg = Json::array((int) m_vri_commit,
+                           Json::null,
+                           cur_view_.viewno.value(),
+                           commitno_.value());
+    lognumber_t last_logno = first_logno_ + log_.size();
+    if (from_storeno != last_logno) {
+        msg.reserve(msg.size() + 1 + (last_logno - from_storeno) * 3);
+        msg.push_back(from_storeno.value());
+        for (lognumber_t i = from_storeno; i != last_logno; ++i) {
+            log_item& li = log_[i - first_logno_];
+            msg.push_back_list(li.client_uid, li.client_seqno, li.request);
+        }
+    }
     for (auto it = cur_view_.members.begin();
          it != cur_view_.members.end(); ++it)
-        send_peer(it->peer_name, msg);
+        send_commit(it->peer_name, msg);
+    commit_sent_at_ = tamer::drecent();
 }
 
 void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
@@ -637,12 +653,14 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
     if (msg.size() < 4
         || (msg.size() > 5 && (msg.size() - 5) % 3 != 0)
         || !msg[2].is_u()
-        || viewnumber_t(msg[2].to_u()) != cur_view_.viewno
-        || between_views()
-        || !msg[3].is_u()
-        || (is_primary()
-            && !(peer = cur_view_.find_pointer(who->remote_uid())))) {
+        || !msg[3].is_u()) {
         who->send(Json::array(0, msg[1], false));
+        return;
+    } else if (viewnumber_t(msg[2].to_u()) != cur_view_.viewno
+               || between_views()
+               || (is_primary()
+                   && !(peer = cur_view_.find_pointer(who->remote_uid())))) {
+        send_view(who);
         return;
     }
 
@@ -653,9 +671,14 @@ void Vrgroup::process_commit(Vrendpoint* who, const Json& msg) {
         if (peer->store_count > cur_view_.f()
             && commitno > commitno_)
             update_commitno(commitno);
+        if (peer->store_count == cur_view_.size()
+            && commitno > complete_commitno_)
+            complete_commitno_ = commitno;
     } else {
+        assert(commitno >= commitno_);
         commitno_ = commitno;
         process_at_number(commitno_, at_commit_);
+        primary_received_at_ = tamer::drecent();
     }
 
     if (!is_primary() && msg.size() > 5) {
@@ -694,6 +717,46 @@ void Vrgroup::update_commitno(lognumber_t commitno) {
         if (ep)
             ep->send(std::move(it->second));
     }
+}
+
+tamed void Vrgroup::primary_keepalive_loop() {
+    tamed { viewnumber_t view = cur_view_.viewno; }
+    while (1) {
+        twait { tamer::at_delay(primary_keepalive_timeout_ / 4,
+                                make_event()); }
+        if (!in_view(view))
+            break;
+        if (tamer::drecent() - commit_sent_at_
+              >= primary_keepalive_timeout_ / 2
+            && !stopped_)
+            broadcast_commit(first_logno_ + log_.size());
+    }
+}
+
+tamed void Vrgroup::backup_keepalive_loop() {
+    tamed { viewnumber_t view = cur_view_.viewno; }
+    primary_received_at_ = tamer::drecent();
+    while (1) {
+        twait { tamer::at_delay(primary_keepalive_timeout_ * (0.375 + drand48() / 8),
+                                make_event()); }
+        if (next_view_.viewno != view)
+            break;
+        if (tamer::drecent() - primary_received_at_
+              >= primary_keepalive_timeout_
+            && !stopped_) {
+            next_view_.advance();
+            start_view_change();
+            break;
+        }
+    }
+}
+
+void Vrgroup::stop() {
+    stopped_ = true;
+}
+
+void Vrgroup::go() {
+    stopped_ = false;
 }
 
 
@@ -1145,6 +1208,11 @@ tamed void go() {
     twait { client_conn->receive(make_event(j)); }
     client_conn->print_receive(j);
     twait { tamer::at_delay_usec(10000, make_event()); }
+    twait { tamer::at_delay_sec(3, make_event()); }
+    groups[4]->stop();
+    twait { tamer::at_delay_sec(5, make_event()); }
+    groups[4]->go();
+    twait { tamer::at_delay_sec(5, make_event()); }
 }
 
 int main(int, char**) {

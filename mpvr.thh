@@ -77,21 +77,15 @@ class Vrgroup {
         return cur_view_.viewno;
     }
 
-    template <typename T>
-    event<T> timeout(event<T> done) const {
-        return tamer::add_timeout(3, done);
-    }
-    template <typename R, typename T>
-    event<T> timeout(tamer::preevent<R, T>&& done) const {
-        return tamer::add_timeout(3, std::move(done));
-    }
-
     tamed void connect(Json peer_name, event<> done);
     tamed void join(Json peer_name, event<> done);
 
     void at_view(viewnumber_t viewno, tamer::event<> done);
     void at_store(lognumber_t storeno, tamer::event<> done);
     void at_commit(lognumber_t commitno, tamer::event<> done);
+
+    void stop();
+    void go();
 
     void dump(std::ostream&) const;
 
@@ -152,6 +146,7 @@ class Vrgroup {
         void prepare(String uid, const Json& payload);
         void clear_preparation();
         void add(Json peer_name, const String& my_uid);
+        void advance();
         void account_commit(view_member* peer, lognumber_t commitno);
         bool account_all_commits();
     };
@@ -179,16 +174,32 @@ class Vrgroup {
 
     lognumber_t first_logno_;
     lognumber_t commitno_;
+    lognumber_t complete_commitno_;
+    lognumber_t broadcast_commitno_;
     std::deque<log_item> log_;
 
     bool next_view_sent_confirm_;
+
+    bool stopped_;
 
     std::deque<std::pair<viewnumber_t, tamer::event<> > > at_view_;
     std::deque<std::pair<lognumber_t, tamer::event<> > > at_store_;
     std::deque<std::pair<lognumber_t, tamer::event<> > > at_commit_;
 
+    // timeouts
+    double primary_keepalive_timeout_;
+    double backup_keepalive_timeout_;
+    double view_change_timeout_;
+
+    double commit_sent_at_;
+    double primary_received_at_;
+
     inline bool is_primary() const {
         return cur_view_.me_primary();
+    }
+    inline bool in_view(viewnumber_t v) const {
+        return cur_view_.viewno == v
+            && (next_view_.viewno == v || !next_view_sent_confirm_);
     }
     inline bool between_views() const {
         return cur_view_.viewno != next_view_.viewno
@@ -200,6 +211,7 @@ class Vrgroup {
     Json view_payload(const String& peer_uid);
     void send_view(Vrendpoint* who, Json payload = Json(), Json seqno = Json());
     tamed void send_view(Json peer);
+    void start_view_change();
     void broadcast_view();
     void process_join(Vrendpoint* who, const Json& msg);
     void process_view(Vrendpoint* who, const Json& msg);
@@ -208,12 +220,14 @@ class Vrgroup {
     void process_replicate(Vrendpoint* who, const Json& msg);
     void process_commit(Vrendpoint* who, const Json& msg);
     void update_commitno(lognumber_t commitno);
-    tamed void send_peer(Json peer_name, Json msg);
-    void broadcast_peers(Json msg);
+    tamed void send_commit(Json peer_name, Json msg);
+    void broadcast_commit(lognumber_t from_storeno);
     template <typename T> void process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list);
 
     tamed void listen_loop();
     tamed void connection_loop(Vrendpoint* peer, bool active_end);
+    tamed void primary_keepalive_loop();
+    tamed void backup_keepalive_loop();
 };
 
 template <typename T>
