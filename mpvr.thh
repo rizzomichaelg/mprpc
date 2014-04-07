@@ -211,7 +211,7 @@ class Vrgroup {
     Json view_payload(const String& peer_uid);
     void send_view(Vrendpoint* who, Json payload = Json(), Json seqno = Json());
     tamed void send_view(Json peer);
-    void start_view_change();
+    tamed void start_view_change();
     void broadcast_view();
     void process_join(Vrendpoint* who, const Json& msg);
     void process_view(Vrendpoint* who, const Json& msg);

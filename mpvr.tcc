@@ -586,12 +586,21 @@ void Vrgroup::process_join(Vrendpoint* who, const Json&) {
     }
 }
 
-void Vrgroup::start_view_change() {
+tamed void Vrgroup::start_view_change() {
+    tamed { viewnumber_t view = next_view_.viewno; }
     cur_view_.clear_preparation();
     next_view_sent_confirm_ = false;
     cur_view_.prepare(uid(), Json());
     next_view_.prepare(uid(), Json());
     broadcast_view();
+
+    // kick off another view change if this one appears to fail
+    twait { tamer::at_delay(view_change_timeout_ * (1 + drand48() / 8),
+                            make_event()); }
+    if (cur_view_.viewno < view) {
+        next_view_.advance();
+        start_view_change();
+    }
 }
 
 void Vrgroup::process_request(Vrendpoint* who, const Json& msg) {
