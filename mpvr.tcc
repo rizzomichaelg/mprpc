@@ -325,8 +325,8 @@ tamed void Vrgroup::connect(Json peer_name, event<> done) {
         return;
     }
 
-    std::cerr << tamer::now() << ":" << uid() << ": connect: connecting to "
-              << peer_uid << "\n";
+    std::cerr << tamer::recent() << ":" << uid() << " <-> " << peer_uid
+              << ": connecting\n";
     twait { me_->connect(peer_name, make_event(peer)); }
     if (peer) {
         assert(peer->remote_uid() == peer_uid);
@@ -453,13 +453,15 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
         if (payload["adopt"]) {
             assert(!next_view_.me_primary());
             cur_view_ = next_view_;
+            next_view_sent_confirm_ = true;
             process_at_number(cur_view_.viewno, at_view_);
             backup_keepalive_loop();
             return;
         }
         if (payload["log"] && next_view_.me_primary())
             process_view_log_transfer(payload);
-        want_send = !payload["ack"] && !payload["confirm"];
+        want_send = !payload["ack"] && !payload["confirm"]
+            && (cur_view_.viewno != next_view_.viewno || is_primary());
     } else {
         // start new view
         cur_view_.clear_preparation();
@@ -484,7 +486,8 @@ void Vrgroup::process_view(Vrendpoint* who, const Json& msg) {
         next_view_sent_confirm_ = true;
     }
     if (next_view_.nconfirmed > next_view_.f()
-        && next_view_.me_primary()) {
+        && next_view_.me_primary()
+        && cur_view_.viewno != next_view_.viewno) {
         next_view_.account_all_commits();
         broadcast_view();
         cur_view_ = next_view_;
@@ -598,6 +601,8 @@ tamed void Vrgroup::start_view_change() {
     twait { tamer::at_delay(view_change_timeout_ * (1 + drand48() / 8),
                             make_event()); }
     if (cur_view_.viewno < view) {
+        std::cerr << tamer::recent() << ":" << uid() << ": timing out view "
+                  << unparse_view_state() << "\n";
         next_view_.advance();
         start_view_change();
     }
@@ -859,7 +864,7 @@ Vrtestconnection* Vrtestnode::connect(Vrtestnode* n) {
 
 Vrtestconnection::Vrtestconnection(Vrtestnode* from, Vrtestnode* to)
     : Vrendpoint(from->uid(), to->uid()), from_node_(from),
-      delay_(0.1), loss_p_(0) {
+      delay_(0.05 + 0.0125 * drand48()), loss_p_(0) {
     coroutine();
 }
 
