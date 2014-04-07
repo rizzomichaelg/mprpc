@@ -38,31 +38,123 @@ class Vrchannel {
     static String make_client_uid();
     static String make_replica_uid();
 
-    virtual void connect(String peer_uid, event<Vrchannel*> done);
+    virtual void connect(String peer_uid, Json peer_name,
+                         event<Vrchannel*> done);
     virtual void receive_connection(event<Vrchannel*> done);
 
     virtual void send(Json msg);
     virtual void receive(event<Json> done);
     virtual void close();
 
-    void print_receive(const Json& msg);
-
   protected:
     String local_uid_;
     String remote_uid_;
     String connection_uid_;
     unsigned connection_version_;
+};
 
-    void print_message(bool issend, const Json& msg);
+
+class Vrconstants {
+  public:
+    double message_timeout;
+    double client_message_timeout;
+    double request_timeout;
+    double handshake_timeout;
+    double primary_keepalive_timeout;
+    double backup_keepalive_timeout;
+    double view_change_timeout;
+
+    Vrconstants()
+        : message_timeout(1),
+          client_message_timeout(1.5),
+          request_timeout(10),
+          handshake_timeout(5),
+          primary_keepalive_timeout(1),
+          backup_keepalive_timeout(2),
+          view_change_timeout(0.5) {
+    }
+};
+
+typedef circular_int<unsigned> viewnumber_t;
+typedef viewnumber_t::difference_type viewnumberdiff_t;
+typedef circular_int<unsigned> lognumber_t;
+typedef lognumber_t::difference_type lognumberdiff_t;
+
+
+struct Vrview {
+    struct member_type {
+        String uid;
+        Json peer_name;
+        bool acked;
+        bool confirmed;
+        bool has_storeno;
+        lognumber_t storeno;
+        unsigned store_count;
+        explicit member_type(String peer_uid, Json peer_name)
+            : uid(std::move(peer_uid)), peer_name(std::move(peer_name)),
+              acked(false), confirmed(false),
+              has_storeno(false), store_count(0) {
+            assert(!this->peer_name["uid"] || this->peer_name["uid"] == uid);
+            this->peer_name["uid"] = this->uid;
+        }
+    };
+
+    viewnumber_t viewno;
+    std::vector<member_type> members;
+    int primary_index;
+    int my_index;
+    unsigned nacked;
+    unsigned nconfirmed;
+
+    Vrview();
+    static Vrview make_singular(String peer_uid, Json peer_name);
+
+    inline unsigned size() const {
+        return members.size();
+    }
+    inline unsigned f() const {
+        return size() / 2;
+    }
+    inline bool me_primary() const {
+        return primary_index == my_index;
+    }
+    inline member_type& primary() {
+        return members[primary_index];
+    }
+
+    inline int count(const String& uid) const;
+    inline member_type* find_pointer(const String& uid);
+    Json members_json() const;
+    Json commits_json() const;
+    bool assign(Json msg, const String& my_uid);
+    //inline Json operator[](const String& uid) const;
+    bool operator==(const Vrview& x) const;
+    bool operator!=(const Vrview& x) const { return !(*this == x); }
+    bool shared_quorum(const Vrview& x) const;
+    void prepare(String uid, const Json& payload);
+    void clear_preparation();
+    void add(String uid, const String& my_uid);
+    void advance();
+    void account_commit(member_type* peer, lognumber_t commitno);
+    bool account_all_commits(Json old_cj);
 };
 
 
 class Vrnode {
   public:
-    typedef circular_int<unsigned> viewnumber_t;
-    typedef viewnumber_t::difference_type viewnumberdiff_t;
-    typedef circular_int<unsigned> lognumber_t;
-    typedef lognumber_t::difference_type lognumberdiff_t;
+    struct log_item {
+        viewnumber_t viewno;
+        String client_uid;
+        unsigned client_seqno;
+        Json request;
+        log_item() {
+        }
+        log_item(viewnumber_t v, String cuid, unsigned cseqno, Json req)
+            : viewno(v), client_uid(std::move(cuid)), client_seqno(cseqno),
+              request(std::move(req)) {
+        }
+    };
+
 
     Vrnode(const String& group_name, Vrchannel* me, std::mt19937& rg);
 
@@ -78,6 +170,7 @@ class Vrnode {
 
     tamed void connect(String peer_uid, event<> done);
     tamed void join(String peer_uid, event<> done);
+    void join(String peer_uid, Json peer_name, event<> done);
 
     void at_view(viewnumber_t viewno, tamer::event<> done);
     void at_store(lognumber_t storeno, tamer::event<> done);
@@ -86,78 +179,29 @@ class Vrnode {
     void stop();
     void go();
 
+    inline lognumber_t first_logno() const {
+        return first_logno_;
+    }
+    inline lognumber_t last_logno() const {
+        return first_logno_ + log_.size();
+    }
+    inline lognumber_t commitno() const {
+        return commitno_;
+    }
+    inline const log_item& log(lognumber_t logno) const {
+        size_t delta = logno - first_logno_;
+        assert(delta < log_.size());
+        return log_[delta];
+    }
+
     void dump(std::ostream&) const;
 
     inline std::ostream& log() const;
-    inline std::ostream& log_send(Vrchannel*) const;
-    inline std::ostream& log_receive(Vrchannel*) const;
-    inline std::ostream& log_connection(Vrchannel*) const;
-    inline std::ostream& log_connection(Vrchannel*, const char* ctype) const;
 
   private:
     String group_name_;
 
-    struct view_member {
-        String uid;
-        Json peer_name;
-        bool acked;
-        bool confirmed;
-        bool has_storeno;
-        lognumber_t storeno;
-        unsigned store_count;
-        explicit view_member(String peer_uid, Json peer_name)
-            : uid(std::move(peer_uid)), peer_name(std::move(peer_name)),
-              acked(false), confirmed(false),
-              has_storeno(false), store_count(0) {
-            assert(!this->peer_name["uid"] || this->peer_name["uid"] == uid);
-            this->peer_name["uid"] = this->uid;
-        }
-    };
-
-    struct view_type {
-        viewnumber_t viewno;
-        std::vector<view_member> members;
-        int primary_index;
-        int my_index;
-        unsigned nacked;
-        unsigned nconfirmed;
-
-        view_type();
-        static view_type make_singular(String peer_uid);
-
-        inline unsigned size() const {
-            return members.size();
-        }
-        inline unsigned f() const {
-            return size() / 2;
-        }
-        inline bool me_primary() const {
-            return primary_index == my_index;
-        }
-        inline view_member& primary() {
-            return members[primary_index];
-        }
-        inline String primary_uid() const {
-            return members[primary_index].uid;
-        }
-
-        inline int count(const String& uid) const;
-        inline view_member* find_pointer(const String& uid);
-        Json members_json() const;
-        Json commits_json() const;
-        bool assign(Json msg, const String& my_uid);
-        //inline Json operator[](const String& uid) const;
-        bool operator==(const view_type& x) const;
-        bool operator!=(const view_type& x) const { return !(*this == x); }
-        bool shared_quorum(const view_type& x) const;
-        void prepare(String uid, const Json& payload);
-        void clear_preparation();
-        void add(String uid, const String& my_uid);
-        void advance();
-        void account_commit(view_member* peer, lognumber_t commitno);
-        bool account_all_commits();
-    };
-
+    typedef Vrview view_type;
     view_type cur_view_;
     view_type next_view_;
     bool want_member_;
@@ -165,27 +209,15 @@ class Vrnode {
     Vrchannel* me_;
     mutable std::unordered_map<String, Vrchannel*> endpoints_;
     mutable std::unordered_map<String, tamer::event<> > connection_wait_;
-
-    struct log_item {
-        viewnumber_t viewno;
-        String client_uid;
-        unsigned client_seqno;
-        Json request;
-        log_item() {
-        }
-        log_item(viewnumber_t v, String cuid, unsigned cseqno, Json req)
-            : viewno(v), client_uid(std::move(cuid)), client_seqno(cseqno),
-              request(std::move(req)) {
-        }
-    };
+    mutable std::unordered_map<String, Json> node_names_;
 
     lognumber_t first_logno_;
     lognumber_t commitno_;
     lognumber_t complete_commitno_;
-    lognumber_t broadcast_commitno_;
     std::deque<log_item> log_;
 
     bool next_view_sent_confirm_;
+    lognumber_t next_view_logno_;
 
     bool stopped_;
 
@@ -194,12 +226,7 @@ class Vrnode {
     std::deque<std::pair<lognumber_t, tamer::event<> > > at_commit_;
 
     // timeouts
-    double message_timeout_;
-    double handshake_timeout_;
-    double primary_keepalive_timeout_;
-    double backup_keepalive_timeout_;
-    double view_change_timeout_;
-
+    Vrconstants k_;
     double commit_sent_at_;
     double primary_received_at_;
     std::mt19937& rg_;
@@ -225,6 +252,7 @@ class Vrnode {
     Json view_payload(const String& peer_uid);
     void send_view(Vrchannel* who, Json payload = Json(), Json seqno = Json());
     tamed void send_view(String peer_uid);
+    void initialize_next_view();
     tamed void start_view_change();
     void broadcast_view();
     void process_join(Vrchannel* who, const Json& msg);
@@ -234,7 +262,7 @@ class Vrnode {
     void process_replicate(Vrchannel* who, const Json& msg);
     void process_commit(Vrchannel* who, const Json& msg);
     void update_commitno(lognumber_t commitno);
-    inline Json commit_message() const;
+    inline Json commit_message(lognumber_t logno) const;
     Json commit_log_message(lognumber_t from_storeno) const;
     void send_commit_log(String peer_uid);
     tamed void send_peer(String peer_uid, Json msg);
@@ -248,6 +276,32 @@ class Vrnode {
     tamed void backup_keepalive_loop();
 };
 
+class Vrclient {
+  public:
+    Vrclient(Vrchannel* me, std::mt19937& rg);
+    ~Vrclient();
+
+    tamed void connect(String peer_uid, Json peer_name, event<bool> done);
+    inline void connect(String peer_uid, Json peer_name, event<> done);
+    inline void connect(String peer_uid, event<> done);
+    tamed void request(Json req, event<Json> done);
+    inline void request(Json req, event<> done);
+
+  private:
+    String uid_;
+    unsigned client_seqno_;
+    Vrchannel* me_;
+    Vrchannel* channel_;
+    bool stopped_;
+    std::deque<std::pair<unsigned, tamer::event<Json> > > at_response_;
+    std::mt19937& rg_;
+
+    tamed void connection_loop(Vrchannel* peer);
+    void process_response(Json msg);
+    void process_view(Json msg);
+};
+
+
 template <typename T>
 void Vrnode::process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list) {
     for (auto it = list.begin(); it != list.end(); ++it)
@@ -257,6 +311,18 @@ void Vrnode::process_at_number(T number, std::deque<std::pair<T, tamer::event<> 
         list.pop_front();
 }
 
+inline void Vrclient::connect(String peer_uid, Json peer_name, event<> done) {
+    connect(peer_uid, peer_name, tamer::rebind<bool>(done));
+}
+
+inline void Vrclient::connect(String peer_uid, event<> done) {
+    connect(peer_uid, Json::object("uid", peer_uid), done);
+}
+
+inline void Vrclient::request(Json req, event<> done) {
+    request(std::move(req), tamer::rebind<Json>(done));
+}
+
 std::ostream& operator<<(std::ostream& out, const timeval& tv);
 
 inline std::ostream& Vrnode::log() const {
@@ -264,23 +330,24 @@ inline std::ostream& Vrnode::log() const {
     return std::cerr;
 }
 
-inline std::ostream& Vrnode::log_connection(Vrchannel* ep, const char* ctype) const {
-    std::cerr << tamer::recent() << ":" << uid() << ctype << ep->remote_uid();
+inline std::ostream& log_connection(const Vrchannel* ep, const char* ctype) {
+    std::cerr << tamer::recent() << ":"
+              << ep->local_uid() << ctype << ep->remote_uid();
     if (ep->connection_uid())
         std::cerr << " (" << ep->connection_uid() << ")";
     std::cerr << ": ";
     return std::cerr;
 }
 
-inline std::ostream& Vrnode::log_send(Vrchannel* ep) const {
+inline std::ostream& log_send(const Vrchannel* ep) {
     return log_connection(ep, " -> ");
 }
 
-inline std::ostream& Vrnode::log_receive(Vrchannel* ep) const {
+inline std::ostream& log_receive(const Vrchannel* ep) {
     return log_connection(ep, " <- ");
 }
 
-inline std::ostream& Vrnode::log_connection(Vrchannel* ep) const {
+inline std::ostream& log_connection(const Vrchannel* ep) {
     return log_connection(ep, " <-> ");
 }
 
