@@ -7,13 +7,13 @@
 #include <iostream>
 using tamer::event;
 
-class Vrendpoint {
+class Vrchannel {
   public:
-    inline Vrendpoint(String local_uid, String remote_uid)
+    inline Vrchannel(String local_uid, String remote_uid)
         : local_uid_(std::move(local_uid)), remote_uid_(std::move(remote_uid)),
           connection_version_(0) {
     }
-    virtual ~Vrendpoint() {
+    virtual ~Vrchannel() {
     }
 
     inline const String& local_uid() const {
@@ -37,8 +37,8 @@ class Vrendpoint {
     static String make_client_uid();
     static String make_replica_uid();
 
-    virtual void connect(Json def, event<Vrendpoint*> done);
-    virtual void receive_connection(event<Vrendpoint*> done);
+    virtual void connect(Json def, event<Vrchannel*> done);
+    virtual void receive_connection(event<Vrchannel*> done);
 
     virtual void send(Json msg);
     virtual void receive(event<Json> done);
@@ -58,14 +58,14 @@ class Vrendpoint {
 };
 
 
-class Vrgroup {
+class Vrnode {
   public:
     typedef circular_int<unsigned> viewnumber_t;
     typedef viewnumber_t::difference_type viewnumberdiff_t;
     typedef circular_int<unsigned> lognumber_t;
     typedef lognumber_t::difference_type lognumberdiff_t;
 
-    Vrgroup(const String& group_name, Vrendpoint* me);
+    Vrnode(const String& group_name, Vrchannel* me);
 
     String group_name() const {
         return group_name_;
@@ -155,8 +155,8 @@ class Vrgroup {
     view_type next_view_;
     bool want_member_;
 
-    Vrendpoint* me_;
-    mutable std::unordered_map<String, Vrendpoint*> endpoints_;
+    Vrchannel* me_;
+    mutable std::unordered_map<String, Vrchannel*> endpoints_;
     mutable std::unordered_map<String, tamer::event<> > connection_wait_;
 
     struct log_item {
@@ -209,29 +209,29 @@ class Vrgroup {
     String unparse_view_state() const;
 
     Json view_payload(const String& peer_uid);
-    void send_view(Vrendpoint* who, Json payload = Json(), Json seqno = Json());
+    void send_view(Vrchannel* who, Json payload = Json(), Json seqno = Json());
     tamed void send_view(Json peer);
     tamed void start_view_change();
     void broadcast_view();
-    void process_join(Vrendpoint* who, const Json& msg);
-    void process_view(Vrendpoint* who, const Json& msg);
+    void process_join(Vrchannel* who, const Json& msg);
+    void process_view(Vrchannel* who, const Json& msg);
     void process_view_log_transfer(Json& payload);
-    void process_request(Vrendpoint* who, const Json& msg);
-    void process_replicate(Vrendpoint* who, const Json& msg);
-    void process_commit(Vrendpoint* who, const Json& msg);
+    void process_request(Vrchannel* who, const Json& msg);
+    void process_replicate(Vrchannel* who, const Json& msg);
+    void process_commit(Vrchannel* who, const Json& msg);
     void update_commitno(lognumber_t commitno);
     tamed void send_commit(Json peer_name, Json msg);
     void broadcast_commit(lognumber_t from_storeno);
     template <typename T> void process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list);
 
     tamed void listen_loop();
-    tamed void connection_loop(Vrendpoint* peer, bool active_end);
+    tamed void connection_loop(Vrchannel* peer, bool active_end);
     tamed void primary_keepalive_loop();
     tamed void backup_keepalive_loop();
 };
 
 template <typename T>
-void Vrgroup::process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list) {
+void Vrnode::process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list) {
     for (auto it = list.begin(); it != list.end(); ++it)
         if (number >= it->first)
             it->second();
