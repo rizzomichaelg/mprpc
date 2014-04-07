@@ -58,9 +58,9 @@ Vrnode::view_type::view_type()
     : viewno(0), primary_index(0), my_index(-1), nacked(0), nconfirmed(0) {
 }
 
-Vrnode::view_type Vrnode::view_type::make_singular(Json peer_name) {
+Vrnode::view_type Vrnode::view_type::make_singular(String peer_uid) {
     view_type v;
-    v.members.push_back(view_member(peer_name));
+    v.members.push_back(view_member(std::move(peer_uid), Json()));
     v.members[0].has_storeno = true;
     v.members[0].storeno = 0;
     v.members[0].store_count = 1;
@@ -95,7 +95,7 @@ bool Vrnode::view_type::assign(Json msg, const String& my_uid) {
         seen_uids[uid] = 1;
         if (uid == my_uid)
             my_index = it - membersj.abegin();
-        members.push_back(view_member(*it));
+        members.push_back(view_member(uid, *it));
     }
 
     return true;
@@ -175,15 +175,12 @@ void Vrnode::view_type::clear_preparation() {
         it->acked = it->confirmed = false;
 }
 
-void Vrnode::view_type::add(Json peer_name, const String& my_uid) {
-    if (peer_name.is_s())
-        peer_name = Json::object("uid", peer_name);
-    String peer_uid = peer_name["uid"].to_s();
+void Vrnode::view_type::add(String peer_uid, const String& my_uid) {
     auto it = members.begin();
     while (it != members.end() && it->uid < peer_uid)
         ++it;
     if (it == members.end() || it->uid != peer_uid)
-        members.insert(it, view_member(peer_name));
+        members.insert(it, view_member(std::move(peer_uid), Json()));
 
     my_index = -1;
     for (size_t i = 0; i != members.size(); ++i)
@@ -252,13 +249,15 @@ Vrnode::Vrnode(const String& group_name, Vrchannel* me, std::mt19937& rg)
       first_logno_(0),
       commitno_(0), complete_commitno_(0), broadcast_commitno_(0),
       stopped_(false),
+      message_timeout_(1),
+      handshake_timeout_(5),
       primary_keepalive_timeout_(1),
       backup_keepalive_timeout_(2),
       view_change_timeout_(0.5),
       commit_sent_at_(0),
       rg_(rg) {
     if (me_) {
-        cur_view_ = view_type::make_singular(me_->local_name());
+        cur_view_ = view_type::make_singular(me_->local_uid());
         endpoints_[me->local_uid()] = me;
         listen_loop();
     }
@@ -289,20 +288,13 @@ tamed void Vrnode::listen_loop() {
         twait { me_->receive_connection(make_event(peer)); }
         if (!peer)
             break;
-        connection_loop(peer, false);
+        connection_handshake(peer, false);
     }
 }
 
-tamed void Vrnode::connect(Json peer_name, event<> done) {
-    tamed {
-        Vrchannel* peer;
-        String peer_uid;
-    }
-
+tamed void Vrnode::connect(String peer_uid, event<> done) {
+    tamed { Vrchannel* peer; }
     assert(me_);
-    if (peer_name.is_s())
-        peer_name = Json::object("uid", peer_name);
-    peer_uid = peer_name["uid"].to_s();
 
     // does peer already exist?
     if (endpoints_[peer_uid]) {
@@ -329,65 +321,97 @@ tamed void Vrnode::connect(Json peer_name, event<> done) {
 
     std::cerr << tamer::recent() << ":" << uid() << " <-> " << peer_uid
               << ": connecting\n";
-    twait { me_->connect(peer_name, make_event(peer)); }
+    twait { me_->connect(peer_uid, make_event(peer)); }
     if (peer) {
         assert(peer->remote_uid() == peer_uid);
         peer->set_connection_uid(random_string());
-        peer->send(Json::array((int) m_vri_handshake, Json::null,
-                               peer->connection_uid()));
-        connection_loop(peer, true);
+        connection_handshake(peer, true);
     } else {
         connection_wait_[peer_uid]();
         connection_wait_.erase(peer_uid);
     }
 }
 
-tamed void Vrnode::join(Json peer_name, event<> done) {
-    tamed {
-        String peer_uid = peer_name["uid"].to_s();
-        Vrchannel* ep;
-    }
+tamed void Vrnode::join(String peer_uid, event<> done) {
+    tamed { Vrchannel* ep; }
     assert(want_member_ && next_view_.size() == 1);
-    while (!(ep = endpoints_[peer_uid]))
-        twait { connect(peer_name, make_event()); }
-    if (ep)
-        ep->send(Json::array((int) m_vri_join, Json::null));
+    while (next_view_.size() == 1) {
+        if ((ep = endpoints_[peer_uid])) {
+            ep->send(Json::array((int) m_vri_join, Json::null));
+            twait {
+                at_view(next_view_.viewno + 1,
+                        tamer::add_timeout(message_timeout_, make_event()));
+            }
+        } else
+            twait { connect(peer_uid, make_event()); }
+    }
     done();
 }
 
-tamed void Vrnode::connection_loop(Vrchannel* peer, bool active_end) {
-    tamed { Json msg; String peer_uid = peer->remote_uid(); }
+tamed void Vrnode::connection_handshake(Vrchannel* peer, bool active_end) {
+    tamed {
+        Json msg;
+        String peer_uid = peer->remote_uid();
+        double start_time = tamer::drecent();
+    }
 
-    // first wait for handshake
-    twait { peer->receive(make_event(msg)); }
-    if (msg && msg.is_a() && msg.size() >= 3 && msg[0].is_i() && msg[2].is_s()
-        && msg[0].to_i() == m_vri_handshake) {
-        String handshake_value = msg[2].to_s();
-        assert(!peer->connection_uid()
-               || peer->connection_uid() == handshake_value);
-        peer->set_connection_uid(handshake_value);
-        if (endpoints_[peer_uid]) {
-            String old_cuid = endpoints_[peer_uid]->connection_uid();
-            std::cerr << tamer::recent() << ":" << uid() << " <-> " << peer_uid
-                      << " (" << handshake_value << "): ";
-            if (old_cuid < handshake_value)
-                std::cerr << "preferring old connection (" << old_cuid << ")\n";
-            else {
-                std::cerr << "dropping old connection (" << old_cuid << ")\n";
-                endpoints_[peer_uid]->close();
-                endpoints_[peer_uid] = peer;
-            }
-        } else
-            endpoints_[peer_uid] = peer;
-        connection_wait_[peer_uid]();
-        connection_wait_.erase(peer_uid);
-        if (!active_end)
-            peer->send(msg);
-    } else {
-        std::cerr << uid() << ": bad handshake from " << peer_uid << "\n";
+    // handshake loop with retry
+    while (1) {
+        if (active_end) {
+            Json handshake_msg = Json::array((int) m_vri_handshake, Json::null,
+                                             peer->connection_uid());
+            log_send(peer) << handshake_msg << "\n";
+            peer->send(handshake_msg);
+        }
+        twait {
+            double timeout = active_end ? message_timeout_ : handshake_timeout_;
+            peer->receive(tamer::add_timeout(timeout, make_event(msg)));
+        }
+        if (msg || tamer::drecent() >= start_time + handshake_timeout_)
+            break;
+    }
+
+    // test handshake message
+    if (!msg) {
+        log_receive(peer) << "handshake timeout\n";
         delete peer;
         return;
-    }
+    } else if (!(msg.is_a() && msg.size() >= 3 && msg[0] == m_vri_handshake
+                 && msg[2].is_s())) {
+        log_receive(peer) << "bad handshake " << msg << "\n";
+        delete peer;
+        return;
+    } else
+        log_receive(peer) << msg << "\n";
+
+    // parse handshake
+    String handshake_value = msg[2].to_s();
+    assert(!peer->connection_uid()
+           || peer->connection_uid() == handshake_value);
+    peer->set_connection_uid(handshake_value);
+
+    if (endpoints_[peer_uid]) {
+        String old_cuid = endpoints_[peer_uid]->connection_uid();
+        if (old_cuid < handshake_value)
+            log_connection(peer) << "preferring old connection (" << old_cuid << ")\n";
+        else {
+            log_connection(peer) << "dropping old connection (" << old_cuid << ")\n";
+            endpoints_[peer_uid]->close();
+            endpoints_[peer_uid] = peer;
+        }
+    } else
+        endpoints_[peer_uid] = peer;
+
+    connection_wait_[peer_uid]();
+    connection_wait_.erase(peer_uid);
+    if (!active_end)
+        peer->send(msg);
+
+    connection_loop(peer);
+}
+
+tamed void Vrnode::connection_loop(Vrchannel* peer) {
+    tamed { Json msg; }
 
     while (1) {
         twait { peer->receive(make_event(msg)); }
@@ -395,8 +419,10 @@ tamed void Vrnode::connection_loop(Vrchannel* peer, bool active_end) {
             break;
         if (stopped_) // ignore message
             continue;
-        peer->print_receive(msg, unparse_view_state());
-        if (msg[0] == m_vri_request)
+        log_receive(peer) << msg << " " << unparse_view_state() << "\n";
+        if (msg[0] == m_vri_handshake)
+            peer->send(msg);
+        else if (msg[0] == m_vri_request)
             process_request(peer, msg);
         else if (msg[0] == m_vri_commit)
             process_commit(peer, msg);
@@ -406,10 +432,9 @@ tamed void Vrnode::connection_loop(Vrchannel* peer, bool active_end) {
             process_view(peer, msg);
     }
 
-    std::cerr << tamer::recent() << ":" << uid() << " <-> " << peer_uid
-              << " (" << peer->connection_uid() << "): connection closed\n";
-    if (endpoints_[peer_uid] == peer)
-        endpoints_.erase(peer_uid);
+    log_connection(peer) << "connection closed\n";
+    if (endpoints_[peer->remote_uid()] == peer)
+        endpoints_.erase(peer->remote_uid());
     delete peer;
 }
 
@@ -452,14 +477,6 @@ void Vrnode::process_view(Vrchannel* who, const Json& msg) {
     else if (vdiff == 0) {
         cur_view_.prepare(who->remote_uid(), payload);
         next_view_.prepare(who->remote_uid(), payload);
-        if (payload["adopt"]) {
-            assert(!next_view_.me_primary());
-            cur_view_ = next_view_;
-            next_view_sent_confirm_ = true;
-            process_at_number(cur_view_.viewno, at_view_);
-            backup_keepalive_loop();
-            return;
-        }
         if (payload["log"] && next_view_.me_primary())
             process_view_log_transfer(payload);
         want_send = !payload["ack"] && !payload["confirm"]
@@ -488,13 +505,18 @@ void Vrnode::process_view(Vrchannel* who, const Json& msg) {
         next_view_sent_confirm_ = true;
     }
     if (next_view_.nconfirmed > next_view_.f()
-        && next_view_.me_primary()
-        && cur_view_.viewno != next_view_.viewno) {
-        next_view_.account_all_commits();
-        broadcast_view();
-        cur_view_ = next_view_;
-        process_at_number(cur_view_.viewno, at_view_);
-        primary_keepalive_loop();
+        && next_view_.me_primary()) {
+        if (cur_view_.viewno != next_view_.viewno) {
+            next_view_.account_all_commits();
+            cur_view_ = next_view_;
+            process_at_number(cur_view_.viewno, at_view_);
+            primary_keepalive_loop();
+            for (auto it = cur_view_.members.begin();
+                 it != cur_view_.members.end(); ++it)
+                if (it->confirmed)
+                    send_commit_log(it->uid);
+        } else
+            send_commit_log(who->remote_uid());
     } else if (want_send)
         send_view(who);
 }
@@ -535,9 +557,6 @@ Json Vrnode::view_payload(const String& peer_uid) {
     if (cur_view_.nacked > cur_view_.f()
         && next_view_.nacked > next_view_.f())
         payload["confirm"] = true;
-    if (next_view_.nconfirmed > next_view_.f()
-        && next_view_.me_primary())
-        payload["adopt"] = true;
     if (next_view_.viewno != cur_view_.viewno
         && !next_view_.me_primary()
         && next_view_.primary().has_storeno) {
@@ -560,19 +579,14 @@ void Vrnode::send_view(Vrchannel* who, Json payload, Json seqno) {
     if (!payload.get("members"))
         payload.merge(view_payload(who->remote_uid()));
     who->send(Json::array((int) m_vri_view, seqno, payload));
-    who->print_send(payload, unparse_view_state());
+    log_send(who) << payload << " " << unparse_view_state() << "\n";
 }
 
-tamed void Vrnode::send_view(Json peer_name) {
-    tamed {
-        String peer_uid;
-        Json payload;
-        Vrchannel* ep;
-    }
-    peer_uid = (peer_name.is_s() ? peer_name : peer_name["uid"]).to_s();
+tamed void Vrnode::send_view(String peer_uid) {
+    tamed { Json payload; Vrchannel* ep; }
     payload = view_payload(peer_uid);
     while (!(ep = endpoints_[peer_uid]))
-        twait { connect(peer_name, make_event()); }
+        twait { connect(peer_uid, make_event()); }
     if (ep != me_)
         send_view(ep, payload);
 }
@@ -580,13 +594,13 @@ tamed void Vrnode::send_view(Json peer_name) {
 void Vrnode::broadcast_view() {
     for (auto it = next_view_.members.begin();
          it != next_view_.members.end(); ++it)
-        send_view(it->peer_name);
+        send_view(it->uid);
 }
 
 void Vrnode::process_join(Vrchannel* who, const Json&) {
     view_type v;
     if (!next_view_.count(who->remote_uid())) {
-        next_view_.add(who->remote_name(), uid());
+        next_view_.add(who->remote_uid(), uid());
         start_view_change();
     }
 }
@@ -631,36 +645,49 @@ void Vrnode::process_request(Vrchannel* who, const Json& msg) {
     }
 }
 
-tamed void Vrnode::send_commit(Json peer_name, Json msg) {
-    tamed {
-        String peer_uid = peer_name["uid"].to_s();
-        Vrchannel* ep;
-    }
-    while (!(ep = endpoints_[peer_uid]))
-        twait { connect(peer_name, make_event()); }
-    // XXX add elements from log if rebroadcasting
-    if (ep != me_)
-        ep->send(msg);
+inline Json Vrnode::commit_message() const {
+    return Json::array((int) m_vri_commit,
+                       Json::null,
+                       cur_view_.viewno.value(),
+                       commitno_.value());
 }
 
-void Vrnode::broadcast_commit(lognumber_t from_storeno) {
-    assert(is_primary());
-    Json msg = Json::array((int) m_vri_commit,
-                           Json::null,
-                           cur_view_.viewno.value(),
-                           commitno_.value());
+Json Vrnode::commit_log_message(lognumber_t from_storeno) const {
+    Json msg = commit_message();
     lognumber_t last_logno = first_logno_ + log_.size();
     if (from_storeno != last_logno) {
         msg.reserve(msg.size() + 1 + (last_logno - from_storeno) * 3);
         msg.push_back(from_storeno.value());
         for (lognumber_t i = from_storeno; i != last_logno; ++i) {
-            log_item& li = log_[i - first_logno_];
+            const log_item& li = log_[i - first_logno_];
             msg.push_back_list(li.client_uid, li.client_seqno, li.request);
         }
     }
+    return msg;
+}
+
+tamed void Vrnode::send_peer(String peer_uid, Json msg) {
+    tamed { Vrchannel* ep = nullptr; view_member* vp; }
+    while (!(ep = endpoints_[peer_uid]))
+        twait { connect(peer_uid, make_event()); }
+    if (ep != me_)
+        ep->send(msg);
+}
+
+void Vrnode::send_commit_log(String peer_uid) {
+    if (view_member* vp = cur_view_.find_pointer(peer_uid)) {
+        Json msg =  commit_log_message(vp->has_storeno ? vp->storeno
+                                       : first_logno_ + log_.size());
+        send_peer(peer_uid, msg);
+    }
+}
+
+void Vrnode::broadcast_commit(lognumber_t from_storeno) {
+    assert(is_primary());
+    Json msg = commit_log_message(from_storeno);
     for (auto it = cur_view_.members.begin();
          it != cur_view_.members.end(); ++it)
-        send_commit(it->peer_name, msg);
+        send_peer(it->uid, msg);
     commit_sent_at_ = tamer::drecent();
 }
 
@@ -672,7 +699,18 @@ void Vrnode::process_commit(Vrchannel* who, const Json& msg) {
         || !msg[3].is_u()) {
         who->send(Json::array(0, msg[1], false));
         return;
-    } else if (viewnumber_t(msg[2].to_u()) != cur_view_.viewno
+    }
+
+    viewnumber_t view(msg[2].to_u());
+    if (view == next_view_.viewno
+        && between_views()) {
+        assert(!next_view_.me_primary()
+               && next_view_.primary_uid() == who->remote_uid());
+        cur_view_ = next_view_;
+        next_view_sent_confirm_ = true;
+        process_at_number(cur_view_.viewno, at_view_);
+        backup_keepalive_loop();
+    } else if (view != cur_view_.viewno
                || between_views()
                || (is_primary()
                    && !(peer = cur_view_.find_pointer(who->remote_uid())))) {
@@ -786,7 +824,7 @@ Json Vrchannel::remote_name() const {
     return Json::object("uid", remote_uid());
 }
 
-void Vrchannel::connect(Json, event<Vrchannel*>) {
+void Vrchannel::connect(String, event<Vrchannel*>) {
     assert(0);
 }
 
@@ -805,28 +843,16 @@ void Vrchannel::receive(event<Json>) {
 void Vrchannel::close() {
 }
 
-void Vrchannel::print_message(bool issend, const Json& message,
-                               const String& extra) {
+void Vrchannel::print_message(bool issend, const Json& message) {
     std::cout << tamer::now() << ":"
               << local_uid() << (issend ? " -> " : " <- ") << remote_uid();
     if (connection_uid())
         std::cout << " (" << connection_uid() << ")";
-    std::cout << (issend ? ": send " : ": recv ") << message;
-    if (extra)
-        std::cout << " " << extra;
-    std::cout << "\n";
+    std::cout << (issend ? ": send " : ": recv ") << message << "\n";
 }
 
-void Vrchannel::print_send(const Json& message, const String& extra) {
-    print_message(true, message, extra);
-}
-
-void Vrchannel::print_receive(const Json& message, const String& extra) {
-    print_message(false, message, extra);
-}
-
-void Vrchannel::print_receive(const Json& message, const Json& extra) {
-    print_message(false, message, extra.is_null() ? String() : extra.unparse());
+void Vrchannel::print_receive(const Json& message) {
+    print_message(false, message);
 }
 
 
@@ -880,7 +906,7 @@ class Vrtestlistener : public Vrchannel {
         : Vrchannel(my_node->uid(), String()), my_node_(my_node) {
         set_connection_uid(my_node->uid());
     }
-    void connect(Json def, event<Vrchannel*> done);
+    void connect(String peer_uid, event<Vrchannel*> done);
     void receive_connection(event<Vrchannel*> done);
   private:
     Vrtestnode* my_node_;
@@ -942,7 +968,7 @@ Vrtestchannel* Vrtestnode::connect(Vrtestnode* n) {
 
 Vrtestchannel::Vrtestchannel(Vrtestnode* from, Vrtestnode* to)
     : Vrchannel(from->uid(), to->uid()), from_node_(from),
-      delay_(0.05 + 0.0125 * from->collection()->rand01()), loss_p_(0) {
+      delay_(0.05 + 0.0125 * from->collection()->rand01()), loss_p_(0.3) {
     coroutine();
 }
 
@@ -1030,8 +1056,8 @@ tamed void Vrtestchannel::coroutine() {
     }
 }
 
-void Vrtestlistener::connect(Json def, event<Vrchannel*> done) {
-    if (Vrtestnode* n = my_node_->find(def["uid"].to_s()))
+void Vrtestlistener::connect(String peer_uid, event<Vrchannel*> done) {
+    if (Vrtestnode* n = my_node_->find(peer_uid))
         done(my_node_->connect(n));
     else
         done(nullptr);
@@ -1060,7 +1086,7 @@ tamed void go() {
                                    vrg.rg_));
     for (int i = 0; i < 5; ++i)
         nodes[i]->dump(std::cout);
-    twait { nodes[0]->join(vrg.nodes_[1]->name(), make_event()); }
+    twait { nodes[0]->join(vrg.nodes_[1]->uid(), make_event()); }
     for (int i = 0; i < 5; ++i)
         nodes[i]->dump(std::cout);
     twait {
@@ -1070,7 +1096,7 @@ tamed void go() {
 
     for (int i = 0; i < 5; ++i)
         nodes[i]->dump(std::cout);
-    twait { nodes[2]->join(vrg.nodes_[0]->name(), make_event()); }
+    twait { nodes[2]->join(vrg.nodes_[0]->uid(), make_event()); }
     twait {
         nodes[0]->at_view(2, make_event());
         nodes[1]->at_view(2, make_event());
@@ -1079,7 +1105,7 @@ tamed void go() {
 
     for (int i = 0; i < 5; ++i)
         nodes[i]->dump(std::cout);
-    twait { nodes[4]->join(vrg.nodes_[0]->name(), make_event()); }
+    twait { nodes[4]->join(vrg.nodes_[0]->uid(), make_event()); }
     twait {
         nodes[0]->at_view(3, make_event());
         nodes[1]->at_view(3, make_event());
