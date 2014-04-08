@@ -1381,7 +1381,7 @@ void Vrtestcollection::check() {
         }
     }
     std::sort(first_lognos.begin(), first_lognos.end());
-    lognumber_t first_logno = first_lognos.front();
+    lognumber_t first_logno = first_lognos[f];
     std::sort(last_lognos.begin(), last_lognos.end());
     lognumber_t last_logno = last_lognos.back();
 
@@ -1425,7 +1425,7 @@ void Vrtestcollection::check() {
         assert(r->first_logno() <= r->decideno());
         assert(r->decideno() <= r->commitno());
         assert(r->commitno() <= r->last_logno());
-        lognumber_t first = std::max(first_logno_, r->first_logno());
+        lognumber_t first = std::max(first_logno, r->first_logno());
         lognumber_t last = std::min(commitno_, r->last_logno());
         for (; first < last; ++first) {
             const Vrreplica::log_item& li = r->log_entry(first);
@@ -1516,7 +1516,8 @@ tamed void go(Vrtestcollection& vrg, std::vector<Vrreplica*>& nodes) {
     twait { tamer::at_delay_sec(5, make_event()); }
     nodes[4]->go();
 
-    twait { tamer::at_delay_sec(100000, make_event()); }
+    twait { tamer::at_delay_sec(50000, make_event()); }
+    exit(0);
 }
 
 static Clp_Option options[] = {
