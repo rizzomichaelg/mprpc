@@ -156,8 +156,8 @@ struct Vrview {
     bool operator==(const Vrview& x) const;
     bool operator!=(const Vrview& x) const { return !(*this == x); }
     bool shared_quorum(const Vrview& x) const;
-    void prepare(String uid, const Json& payload);
-    void clear_preparation();
+    void prepare(String uid, const Json& payload, bool is_next);
+    void clear_preparation(bool is_next);
     void add(String uid, const String& my_uid);
     void advance();
     void account_commit(member_type* peer, lognumber_t commitno);
@@ -197,6 +197,9 @@ class Vrreplica {
     viewnumber_t view_number() const {
         return cur_view_.viewno;
     }
+    const Vrview& current_view() const {
+        return cur_view_;
+    }
 
     tamed void connect(String peer_uid, event<> done);
     tamed void join(String peer_uid, event<> done);
@@ -217,6 +220,9 @@ class Vrreplica {
     }
     inline lognumber_t commitno() const {
         return commitno_;
+    }
+    inline lognumber_t decideno() const {
+        return decideno_;
     }
     inline const log_item& log_entry(lognumber_t logno) const {
         size_t delta = logno - first_logno_;
@@ -241,10 +247,11 @@ class Vrreplica {
 
     lognumber_t first_logno_;
     lognumber_t commitno_;
-    lognumber_t complete_commitno_;
+    lognumber_t decideno_;
     std::deque<log_item> log_;
 
     bool next_view_sent_confirm_;
+    bool commitno_sticky_;
 
     bool stopped_;
 
@@ -289,11 +296,11 @@ class Vrreplica {
     void process_replicate(Vrchannel* who, const Json& msg);
     void process_commit(Vrchannel* who, const Json& msg);
     void update_commitno(lognumber_t commitno);
-    inline Json commit_message(lognumber_t logno) const;
     Json commit_log_message(lognumber_t from_storeno) const;
-    void send_commit_log(String peer_uid);
+    void send_commit_log(Vrview::member_type* peer, lognumber_t first);
     tamed void send_peer(String peer_uid, Json msg);
     void broadcast_commit(lognumber_t from_storeno);
+    void process_ack(Vrchannel* who, const Json& msg);
     template <typename T> void process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list);
 
     tamed void listen_loop();
