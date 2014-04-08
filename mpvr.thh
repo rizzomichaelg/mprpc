@@ -8,6 +8,9 @@
 #include <iostream>
 using tamer::event;
 
+extern std::ostream* null_ostream;
+extern unsigned log_frequency, log_position;
+
 class Vrchannel {
   public:
     inline Vrchannel(String local_uid, String remote_uid)
@@ -223,8 +226,6 @@ class Vrreplica {
 
     void dump(std::ostream&) const;
 
-    inline std::ostream& log() const;
-
   private:
     String group_name_;
 
@@ -348,18 +349,19 @@ inline void Vrclient::request(Json req, event<> done) {
 
 std::ostream& operator<<(std::ostream& out, const timeval& tv);
 
-inline std::ostream& Vrreplica::log() const {
-    std::cerr << tamer::recent() << ":" << uid() << ": ";
-    return std::cerr;
-}
-
 inline std::ostream& log_connection(const Vrchannel* ep, const char* ctype) {
-    std::cerr << tamer::recent() << ":"
-              << ep->local_uid() << ctype << ep->remote_uid();
-    if (ep->connection_uid())
-        std::cerr << " (" << ep->connection_uid() << ")";
-    std::cerr << ": ";
-    return std::cerr;
+    if (log_frequency == 0 || log_position == log_frequency) {
+        std::cerr << tamer::recent() << ":"
+                  << ep->local_uid() << ctype << ep->remote_uid();
+        if (ep->connection_uid())
+            std::cerr << " (" << ep->connection_uid() << ")";
+        std::cerr << ": ";
+        log_position = 0;
+        return std::cerr;
+    } else {
+        ++log_position;
+        return *null_ostream;
+    }
 }
 
 inline std::ostream& log_send(const Vrchannel* ep) {

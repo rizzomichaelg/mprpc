@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <set>
+#include <fstream>
 #include <tamer/channel.hh>
 
 enum {
@@ -21,6 +22,8 @@ enum {
 };
 
 Vrconstants vrconstants;
+std::ostream* null_ostream;
+unsigned log_frequency = 0, log_position = 0;
 
 std::ostream& operator<<(std::ostream& out, const timeval& tv) {
     char buf[40];
@@ -1374,6 +1377,9 @@ static Clp_Option options[] = {
 };
 
 int main(int argc, char** argv) {
+    null_ostream = new std::ofstream("/dev/null");
+    null_ostream->setstate(std::ios_base::badbit);
+
     Clp_Parser* clp = Clp_NewParser(argc, argv, sizeof(options)/sizeof(options[0]), options);
     unsigned n = 0;
     unsigned seed = std::mt19937::default_seed;
@@ -1390,7 +1396,8 @@ int main(int argc, char** argv) {
         } else if (Clp_IsLong(clp, "loss")) {
             assert(clp->val.d >= 0 && clp->val.d <= 1);
             loss_p = clp->val.d;
-        }
+        } else if (Clp_IsLong(clp, "quiet"))
+            log_frequency = clp->negated ? 0 : 2000;
     }
     n = n ? n : 5;
 
