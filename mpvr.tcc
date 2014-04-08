@@ -575,6 +575,7 @@ void Vrreplica::process_view(Vrchannel* who, const Json& msg) {
             commitno_sticky_ = false;
             process_at_number(cur_view_.viewno, at_view_);
             primary_keepalive_loop();
+            log_connection(who) << uid() << " adopts view " << unparse_view_state() << "\n";
             for (auto it = cur_view_.members.begin();
                  it != cur_view_.members.end(); ++it)
                 if (it->confirmed)
@@ -1363,18 +1364,20 @@ void Vrtestcollection::print_log_position(lognumber_t l) const {
 }
 
 void Vrtestcollection::check() {
+    unsigned f = this->f();
+
     // calculate actual commit numbers
     std::vector<lognumber_t> first_lognos, last_lognos;
-    lognumber_t decideno, commitno;
+    lognumber_t max_decideno, max_commitno;
     for (auto r : replicas_) {
         first_lognos.push_back(r->first_logno());
         last_lognos.push_back(r->last_logno());
         if (r == replicas_.front()) {
-            decideno = r->decideno();
-            commitno = r->commitno();
+            max_decideno = r->decideno();
+            max_commitno = r->commitno();
         } else {
-            decideno = std::max(decideno, r->decideno());
-            commitno = std::max(commitno, r->commitno());
+            max_decideno = std::max(max_decideno, r->decideno());
+            max_commitno = std::max(max_commitno, r->commitno());
         }
     }
     std::sort(first_lognos.begin(), first_lognos.end());
@@ -1382,16 +1385,29 @@ void Vrtestcollection::check() {
     std::sort(last_lognos.begin(), last_lognos.end());
     lognumber_t last_logno = last_lognos.back();
 
-    // advance commit number (check replication)
-    /*    for (size_t x = 0; x != first_lognos.size(); ++x)
-        std::cerr << first_lognos[x] << "/" << last_lognos[x] << " ";
-        std::cerr << "\n";*/
-
     // commit never goes backwards
-    assert(decideno >= decideno_);
-    decideno_ = decideno;
-    assert(commitno >= commitno_);
-    commitno_ = commitno;
+    assert(max_decideno >= decideno_);
+    decideno_ = max_decideno;
+
+    // advance commit number (check replication)
+    while (1) {
+        std::vector<unsigned> commitmap(replicas_.size(), 1);
+        for (auto it = replicas_.begin() + 1; it != replicas_.end(); ++it)
+            for (auto jt = replicas_.begin(); jt != it; ++jt)
+                if (commitno_ >= (*it)->first_logno() && commitno_ < (*it)->last_logno()
+                    && commitno_ >= (*jt)->first_logno() && commitno_ < (*jt)->last_logno()
+                    && (*it)->log_entry(commitno_).viewno == (*jt)->log_entry(commitno_).viewno) {
+                    ++commitmap[jt - replicas_.begin()];
+                    break;
+                }
+        auto maxindex = std::max_element(commitmap.begin(), commitmap.end()) - commitmap.begin();
+        if (commitmap[maxindex] <= f)
+            break;
+        committed_log_.push_back(replicas_[maxindex]->log_entry(commitno_));
+        ++commitno_;
+    }
+    // no one is allowed to think more has committed than has actually committed
+    assert(max_commitno <= commitno_);
 
     // count # committed
     std::vector<unsigned> commit_counts(last_logno - first_logno, 0);
@@ -1399,7 +1415,7 @@ void Vrtestcollection::check() {
     // check integrity of log
     for (auto r : replicas_) {
         assert(commitno_ >= r->commitno());
-        assert(decideno >= r->decideno());
+        assert(max_decideno >= r->decideno());
         if (r->first_logno() > r->decideno()
             || r->decideno() > r->commitno()
             || r->commitno() > r->last_logno())
@@ -1410,24 +1426,19 @@ void Vrtestcollection::check() {
         assert(r->decideno() <= r->commitno());
         assert(r->commitno() <= r->last_logno());
         lognumber_t first = std::max(first_logno_, r->first_logno());
-        lognumber_t last = std::min(commitno, r->last_logno());
+        lognumber_t last = std::min(commitno_, r->last_logno());
         for (; first < last; ++first) {
             const Vrreplica::log_item& li = r->log_entry(first);
-            if (first == first_logno_ + committed_log_.size())
-                committed_log_.push_back(li);
-            else {
-                const Vrreplica::log_item& cli = committed_log_[first - first_logno_];
-                assert(cli.viewno != li.viewno || cli == li);
-            }
-            if (first < first_logno + commit_counts.size()
-                && committed_log_[first - first_logno_].viewno == li.viewno)
+            const Vrreplica::log_item& cli = committed_log_[first - first_logno_];
+            assert(cli.viewno != li.viewno || cli == li);
+            if (first < first_logno + commit_counts.size() && cli.viewno == li.viewno)
                 ++commit_counts[first - first_logno];
         }
     }
 
     // Every "decided" log element has all commits
     unsigned truncatepos = 0, missingpos = 0;
-    for (lognumber_t l = first_logno; l != decideno; ++l) {
+    for (lognumber_t l = first_logno; l != max_decideno; ++l) {
         while (truncatepos != size() && first_lognos[truncatepos] <= l)
             ++truncatepos;
         while (missingpos != size() && last_lognos[missingpos] <= l)
@@ -1440,8 +1451,7 @@ void Vrtestcollection::check() {
         assert(commit_counts[l - first_logno] == truncatepos - missingpos);
     }
     // Every "committed" log element has >= f + 1 commits
-    unsigned f = this->f();
-    for (lognumber_t l = decideno; l != commitno; ++l) {
+    for (lognumber_t l = max_decideno; l != max_commitno; ++l) {
         if (commit_counts[l - first_logno] < f + 1) {
             std::cerr << "check: committed l#" << l << "<" << committed_log_[l - first_logno_].request << "> replicated only " << commit_counts[l - first_logno] << " times\n";
             print_lognos();

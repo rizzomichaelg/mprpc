@@ -358,8 +358,8 @@ std::ostream& operator<<(std::ostream& out, const timeval& tv);
 
 inline std::ostream& log_connection(const Vrchannel* ep, const char* ctype) {
     if (log_frequency == 0 || log_position == log_frequency) {
-        std::cerr << tamer::recent() << ":"
-                  << ep->local_uid() << ctype << ep->remote_uid();
+        std::cerr << tamer::recent() << ":" << ep->local_uid()
+                  << ctype << ep->remote_uid();
         if (ep->connection_uid())
             std::cerr << " (" << ep->connection_uid() << ")";
         std::cerr << ": ";
