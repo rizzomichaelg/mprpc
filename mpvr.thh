@@ -63,6 +63,7 @@ class Vrconstants {
     double primary_keepalive_timeout;
     double backup_keepalive_timeout;
     double view_change_timeout;
+    double retransmit_log_timeout;
 
     Vrconstants()
         : message_timeout(1),
@@ -71,7 +72,8 @@ class Vrconstants {
           handshake_timeout(5),
           primary_keepalive_timeout(1),
           backup_keepalive_timeout(2),
-          view_change_timeout(0.5) {
+          view_change_timeout(0.5),
+          retransmit_log_timeout(2) {
     }
 };
 
@@ -87,16 +89,36 @@ struct Vrview {
         Json peer_name;
         bool acked;
         bool confirmed;
-        bool has_storeno;
-        lognumber_t storeno;
-        unsigned store_count;
+
         explicit member_type(String peer_uid, Json peer_name)
             : uid(std::move(peer_uid)), peer_name(std::move(peer_name)),
               acked(false), confirmed(false),
-              has_storeno(false), store_count(0) {
+              has_storeno_(false), store_count_(0) {
             assert(!this->peer_name["uid"] || this->peer_name["uid"] == uid);
             this->peer_name["uid"] = this->uid;
         }
+
+        bool has_storeno() const {
+            return has_storeno_;
+        }
+        lognumber_t storeno() const {
+            return storeno_;
+        }
+        unsigned store_count() const {
+            assert(has_storeno());
+            return store_count_;
+        }
+        double store_changed_at() const {
+            return store_changed_at_;
+        }
+
+      private:
+        bool has_storeno_;
+        lognumber_t storeno_;
+        unsigned store_count_;
+        double store_changed_at_;
+
+        friend class Vrview;
     };
 
     viewnumber_t viewno;
@@ -136,11 +158,11 @@ struct Vrview {
     void add(String uid, const String& my_uid);
     void advance();
     void account_commit(member_type* peer, lognumber_t commitno);
-    bool account_all_commits(Json old_cj);
+    bool account_all_commits();
 };
 
 
-class Vrnode {
+class Vrreplica {
   public:
     struct log_item {
         viewnumber_t viewno;
@@ -153,10 +175,15 @@ class Vrnode {
             : viewno(v), client_uid(std::move(cuid)), client_seqno(cseqno),
               request(std::move(req)) {
         }
+        bool operator==(const log_item& x) const {
+            return viewno == x.viewno && client_uid == x.client_uid
+                && client_seqno == x.client_seqno
+                && request.unparse() == x.request.unparse();
+        }
     };
 
 
-    Vrnode(const String& group_name, Vrchannel* me, std::mt19937& rg);
+    Vrreplica(const String& group_name, Vrchannel* me, std::mt19937& rg);
 
     String group_name() const {
         return group_name_;
@@ -188,7 +215,7 @@ class Vrnode {
     inline lognumber_t commitno() const {
         return commitno_;
     }
-    inline const log_item& log(lognumber_t logno) const {
+    inline const log_item& log_entry(lognumber_t logno) const {
         size_t delta = logno - first_logno_;
         assert(delta < log_.size());
         return log_[delta];
@@ -217,7 +244,6 @@ class Vrnode {
     std::deque<log_item> log_;
 
     bool next_view_sent_confirm_;
-    lognumber_t next_view_logno_;
 
     bool stopped_;
 
@@ -276,13 +302,13 @@ class Vrnode {
     tamed void backup_keepalive_loop();
 };
 
+
 class Vrclient {
   public:
     Vrclient(Vrchannel* me, std::mt19937& rg);
     ~Vrclient();
 
-    tamed void connect(String peer_uid, Json peer_name, event<bool> done);
-    inline void connect(String peer_uid, Json peer_name, event<> done);
+    tamed void connect(String peer_uid, Json peer_name, event<> done);
     inline void connect(String peer_uid, event<> done);
     tamed void request(Json req, event<Json> done);
     inline void request(Json req, event<> done);
@@ -292,6 +318,7 @@ class Vrclient {
     unsigned client_seqno_;
     Vrchannel* me_;
     Vrchannel* channel_;
+    Vrview view_;
     bool stopped_;
     std::deque<std::pair<unsigned, tamer::event<Json> > > at_response_;
     std::mt19937& rg_;
@@ -303,16 +330,12 @@ class Vrclient {
 
 
 template <typename T>
-void Vrnode::process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list) {
+void Vrreplica::process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list) {
     for (auto it = list.begin(); it != list.end(); ++it)
         if (number >= it->first)
             it->second();
     while (!list.empty() && !list.front().second)
         list.pop_front();
-}
-
-inline void Vrclient::connect(String peer_uid, Json peer_name, event<> done) {
-    connect(peer_uid, peer_name, tamer::rebind<bool>(done));
 }
 
 inline void Vrclient::connect(String peer_uid, event<> done) {
@@ -325,7 +348,7 @@ inline void Vrclient::request(Json req, event<> done) {
 
 std::ostream& operator<<(std::ostream& out, const timeval& tv);
 
-inline std::ostream& Vrnode::log() const {
+inline std::ostream& Vrreplica::log() const {
     std::cerr << tamer::recent() << ":" << uid() << ": ";
     return std::cerr;
 }
