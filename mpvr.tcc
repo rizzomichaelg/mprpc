@@ -582,29 +582,50 @@ void Vrreplica::process_view(Vrchannel* who, const Json& msg) {
 void Vrreplica::process_view_transfer_log(Vrchannel* who, Json& payload) {
     assert(payload["logno"].is_u()
            && payload["log"].is_a()
-           && payload["log"].size() % 4 == 0);
+           && payload["log"].size() % 4 == 0
+           && next_view_.me_primary());
     lognumber_t logno = payload["logno"].to_u();
     assert(logno <= last_logno());
     const Json& log = payload["log"];
     lognumber_t matching_logno = logno + log.size();
-    for (int i = 0; i != log.size(); i += 4, ++logno)
-        if (logno >= log_.first()) {
-            Vrlogitem li(log[i].to_u(), log[i+1].to_s(), log[i+2].to_u(), log[i+3]);
-            auto it = log_.position(logno);
-            if (it == log_.end())
-                log_.push_back(std::move(li));
-            else if (!it->is_real()
-                     || it->viewno < li.viewno) {
-                *it = std::move(li);
-                next_view_.reduce_matching_logno(logno);
-            } else if (it->viewno == li.viewno)
-                assert(it->client_uid == li.client_uid
-                       && it->client_seqno == li.client_seqno);
-            else /* log diverged */
-                matching_logno = std::min(logno, matching_logno);
+
+    // Combine log from payload with current log. New entries go into
+    // next_log_, which is combined with log_ when the new view is adopted.
+    // Although we could put new entries directly into log_, this makes
+    // checking more difficult, since it effectively can make a log entry
+    // appear to be committed before its time.
+    //
+    // Example: 5 replicas, n0-n4. n0, n1 have l#1<@v#0>, n2, n3 have
+    // l#1<@v#1>. New master is n3. If, during the view change, n0's entry
+    // arrives first, and is added to n3's true log, then all of a sudden it
+    // looks like l#1<@v#0> was replicated 3 times, i.e., it committed.
+    for (int i = 0; i != log.size(); i += 4, ++logno) {
+        Vrlogitem li(log[i].to_u(), log[i+1].to_s(), log[i+2].to_u(), log[i+3]);
+        if (logno < log_.first())
+            continue;
+        Vrlogitem* lix;
+        if (logno < log_.last())
+            lix = &log_[logno];
+        else if (!next_log_.empty() && logno < next_log_.last())
+            lix = &next_log_[logno];
+        else {
+            if (next_log_.empty())
+                next_log_.set_first(log_.last());
+            assert(logno == next_log_.last());
+            next_log_.push_back(std::move(li));
+            continue;
         }
+        if (!lix->is_real() || lix->viewno < li.viewno) {
+            *lix = std::move(li);
+            next_view_.reduce_matching_logno(logno);
+        } else if (lix->viewno == li.viewno)
+            assert(lix->client_uid == li.client_uid
+                   && lix->client_seqno == li.client_seqno);
+        else /* log diverged */
+            matching_logno = std::min(logno, matching_logno);
+    }
+
     next_view_.set_matching_logno(who->remote_uid(), matching_logno);
-    process_at_number(log_.last(), at_store_);
 }
 
 void Vrreplica::process_view_check_log(Vrchannel* who, Json& payload) {
@@ -627,13 +648,24 @@ void Vrreplica::primary_adopt_view_change(Vrchannel* who) {
     process_at_number(cur_view_.viewno, at_view_);
     primary_keepalive_loop();
 
+    // transfer next_log_ into log_
+    for (lognumber_t i = next_log_.first(); i != next_log_.last(); ++i)
+        if (i == log_.last())
+            log_.push_back(std::move(next_log_[i]));
+        else if (!log_[i].is_real() || log_[i].viewno < next_log_[i].viewno)
+            log_[i] = std::move(next_log_[i]);
+        else if (log_[i].viewno > next_log_[i].viewno)
+            next_view_.reduce_matching_logno(i);
+    next_log_.clear();
+
     // truncate log if there are gaps
-    for (lognumber_t l = commitno_; l != last_logno(); ++l)
-        if (!log_[l].is_real()) {
-            log_.resize(l - log_.first());
+    for (lognumber_t i = commitno_; i != last_logno(); ++i)
+        if (!log_[i].is_real()) {
+            log_.resize(i - log_.first());
             break;
         }
 
+    // send log to replicas
     for (auto it = cur_view_.members.begin();
          it != cur_view_.members.end(); ++it)
         if (it->confirmed)
@@ -720,6 +752,7 @@ void Vrreplica::process_join(Vrchannel* who, const Json&) {
 void Vrreplica::initialize_next_view() {
     cur_view_.clear_preparation(false);
     next_view_sent_confirm_ = false;
+    next_log_.clear();
     Json my_msg = Json::object("ackno", ackno_.value());
     cur_view_.prepare(uid(), my_msg, false);
     next_view_.prepare(uid(), my_msg, true);

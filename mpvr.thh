@@ -249,6 +249,7 @@ class Vrreplica {
     Vrlog<Vrlogitem, lognumber_t::value_type> log_;
 
     bool next_view_sent_confirm_;
+    Vrlog<Vrlogitem, lognumber_t::value_type> next_log_;
 
     bool stopped_;
 
