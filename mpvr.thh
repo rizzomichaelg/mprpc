@@ -1,16 +1,12 @@
 // -*- mode: c++ -*-
 #ifndef MPVR_THH
 #define MPVR_THH 1
-#include "string.hh"
-#include "circular_int.hh"
 #include "logger.hh"
+#include "vrlog.hh"
 #include <unordered_map>
 #include <random>
 #include <iostream>
 using tamer::event;
-
-extern std::ostream* null_ostream;
-extern unsigned log_frequency, log_position;
 
 class Vrchannel {
   public:
@@ -80,11 +76,6 @@ class Vrconstants {
           retransmit_log_timeout(2) {
     }
 };
-
-typedef circular_int<unsigned> viewnumber_t;
-typedef viewnumber_t::difference_type viewnumberdiff_t;
-typedef circular_int<unsigned> lognumber_t;
-typedef lognumber_t::difference_type lognumberdiff_t;
 
 
 struct Vrview {
@@ -187,28 +178,6 @@ struct Vrview {
 
 class Vrreplica {
   public:
-    struct log_item {
-        viewnumber_t viewno;
-        String client_uid;
-        unsigned client_seqno;
-        Json request;
-        log_item() {
-        }
-        log_item(viewnumber_t v, String cuid, unsigned cseqno, Json req)
-            : viewno(v), client_uid(std::move(cuid)), client_seqno(cseqno),
-              request(std::move(req)) {
-        }
-        bool is_real() const {
-            return client_uid;
-        }
-        bool operator==(const log_item& x) const {
-            return viewno == x.viewno && client_uid == x.client_uid
-                && client_seqno == x.client_seqno
-                && request.unparse() == x.request.unparse();
-        }
-    };
-
-
     Vrreplica(const String& group_name, Vrchannel* me, std::mt19937& rg);
 
     String group_name() const {
@@ -236,7 +205,7 @@ class Vrreplica {
     void go();
 
     inline lognumber_t first_logno() const {
-        return first_logno_;
+        return log_.first();
     }
     inline lognumber_t decideno() const {
         return decideno_;
@@ -251,13 +220,11 @@ class Vrreplica {
         return sackno_;
     }
     inline lognumber_t last_logno() const {
-        return first_logno_ + log_.size();
+        return log_.last();
     }
 
-    inline const log_item& log_entry(lognumber_t logno) const {
-        size_t delta = logno - first_logno_;
-        assert(delta < log_.size());
-        return log_[delta];
+    inline const Vrlogitem& log_entry(lognumber_t logno) const {
+        return log_[logno];
     }
 
     void dump(std::ostream&) const;
@@ -275,12 +242,11 @@ class Vrreplica {
     mutable std::unordered_map<String, tamer::event<> > connection_wait_;
     mutable std::unordered_map<String, Json> node_names_;
 
-    lognumber_t first_logno_;
     lognumber_t decideno_;
     lognumber_t commitno_;
     lognumber_t ackno_;
     lognumber_t sackno_;
-    std::deque<log_item> log_;
+    Vrlog<Vrlogitem, lognumber_t::value_type> log_;
 
     bool next_view_sent_confirm_;
 

@@ -47,7 +47,7 @@ $(TAMEDDIR)/%.hh: %.thh config.h $(DEPSDIR)/stamp $(TAMER)
 %.S: %.o
 	objdump -S $< > $@
 
-mpvr: mpvr.o logger.o mpfd.o string.o straccum.o json.o compiler.o msgpack.o clp.o $(LIBTAMER)
+mpvr: mpvr.o vrlog.o logger.o mpfd.o string.o straccum.o json.o compiler.o msgpack.o clp.o $(LIBTAMER)
 	$(CXX) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(LIBS)
 
 mprpc: mprpc.o mpfd.o string.o straccum.o json.o compiler.o msgpack.o clp.o $(LIBTAMER)
