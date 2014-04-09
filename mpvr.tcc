@@ -777,7 +777,7 @@ void Vrreplica::process_commit(Vrchannel* who, const Json& msg) {
                && next_view_.primary().uid == who->remote_uid());
         cur_view_ = next_view_;
         next_view_sent_confirm_ = true;
-        commitno_sticky_ = true;
+        commitno_sticky_ = true; // acknowledge `commitno_` until log confirmed
         process_at_number(cur_view_.viewno, at_view_);
         backup_keepalive_loop();
     } else if (view != cur_view_.viewno || between_views()) {
@@ -785,27 +785,11 @@ void Vrreplica::process_commit(Vrchannel* who, const Json& msg) {
         return;
     }
 
-    if (msg.size() > 6) {
-        lognumber_t logno = msg[5].to_u();
-        if (commitno_sticky_ && logno <= commitno_) {
-            log_.resize(commitno_ - first_logno_);
-            commitno_sticky_ = false;
-        }
-        for (int i = 6; i != msg.size(); i += 4, ++logno) {
-            size_t logpos = logno - first_logno_;
-            if (commitno_ <= logno && logpos <= log_.size()) {
-                log_item li(cur_view_.viewno - msg[i].to_u(),
-                            msg[i + 1].to_s(), msg[i + 2].to_u(), msg[i + 3]);
-                if (logpos == log_.size())
-                    log_.push_back(std::move(li));
-                else if (log_[logpos].viewno < cur_view_.viewno)
-                    log_[logpos] = std::move(li);
-            }
-        }
-        process_at_number(last_logno(), at_store_);
-        who->send(Json::array(m_vri_ack, Json::null, cur_view_.viewno.value(),
-                              commitno_sticky_ ? commitno_.value() : last_logno().value()));
-    }
+    if (msg.size() > 6)
+        process_commit_log(msg);
+
+    who->send(Json::array(m_vri_ack, Json::null, cur_view_.viewno.value(),
+                          commitno_sticky_ ? commitno_.value() : last_logno().value()));
 
     lognumber_t commitno = msg[3].to_u();
     if (commitno > commitno_
@@ -823,6 +807,39 @@ void Vrreplica::process_commit(Vrchannel* who, const Json& msg) {
         }
     }
     primary_received_at_ = tamer::drecent();
+}
+
+void Vrreplica::process_commit_log(const Json& msg) {
+    lognumber_t logno = msg[5].to_u();
+    size_t nlog = (msg.size() - 6) / 4;
+
+    if (commitno_sticky_) {
+        if (logno <= commitno_
+            && logno + nlog < last_logno()
+            && log_[(logno + nlog) - first_logno_].viewno == cur_view_.viewno)
+            // can preserve later items in log, they're from this view
+            commitno_sticky_ = false;
+        else if (logno <= commitno_) {
+            log_.resize(commitno_ - first_logno_);
+            commitno_sticky_ = false;
+        } else
+            while (last_logno() < logno)
+                log_.emplace_back(cur_view_.viewno - 1, String(), 0, Json());
+    }
+
+    for (int i = 6; i != msg.size(); i += 4, ++logno) {
+        size_t logpos = logno - first_logno_;
+        if (commitno_ <= logno && logpos <= log_.size()) {
+            log_item li(cur_view_.viewno - msg[i].to_u(),
+                        msg[i + 1].to_s(), msg[i + 2].to_u(), msg[i + 3]);
+            if (logpos == log_.size())
+                log_.push_back(std::move(li));
+            else if (log_[logpos].viewno < cur_view_.viewno)
+                log_[logpos] = std::move(li);
+        }
+    }
+
+    process_at_number(last_logno(), at_store_);
 }
 
 void Vrreplica::update_commitno(lognumber_t commitno) {
@@ -1390,16 +1407,24 @@ void Vrtestcollection::check() {
     decideno_ = max_decideno;
 
     // advance commit number (check replication)
+    std::vector<unsigned> commitmap;
+    std::vector<const Vrreplica::log_item*> itemmap;
     while (1) {
-        std::vector<unsigned> commitmap(replicas_.size(), 1);
-        for (auto it = replicas_.begin() + 1; it != replicas_.end(); ++it)
-            for (auto jt = replicas_.begin(); jt != it; ++jt)
-                if (commitno_ >= (*it)->first_logno() && commitno_ < (*it)->last_logno()
-                    && commitno_ >= (*jt)->first_logno() && commitno_ < (*jt)->last_logno()
-                    && (*it)->log_entry(commitno_).viewno == (*jt)->log_entry(commitno_).viewno) {
-                    ++commitmap[jt - replicas_.begin()];
-                    break;
-                }
+        itemmap.assign(replicas_.size(), nullptr);
+        commitmap.assign(replicas_.size(), 1);
+        for (size_t i = 0; i != replicas_.size(); ++i) {
+            Vrreplica* r = replicas_[i];
+            if (commitno_ >= r->first_logno() && commitno_ < r->last_logno()
+                && r->log_entry(commitno_).is_real())
+                itemmap[i] = &r->log_entry(commitno_);
+        }
+        for (size_t i = 1; i != replicas_.size(); ++i)
+            if (itemmap[i])
+                for (size_t j = 0; j != i; ++j)
+                    if (itemmap[j] && itemmap[i]->viewno == itemmap[j]->viewno) {
+                        ++commitmap[j];
+                        break;
+                    }
         auto maxindex = std::max_element(commitmap.begin(), commitmap.end()) - commitmap.begin();
         if (commitmap[maxindex] <= f)
             break;
@@ -1430,9 +1455,11 @@ void Vrtestcollection::check() {
         for (; first < last; ++first) {
             const Vrreplica::log_item& li = r->log_entry(first);
             const Vrreplica::log_item& cli = committed_log_[first - first_logno_];
-            assert(cli.viewno != li.viewno || cli == li);
-            if (first < first_logno + commit_counts.size() && cli.viewno == li.viewno)
-                ++commit_counts[first - first_logno];
+            if (li.is_real()) {
+                assert(cli.viewno != li.viewno || cli == li);
+                if (first < first_logno + commit_counts.size() && cli.viewno == li.viewno)
+                    ++commit_counts[first - first_logno];
+            }
         }
     }
 

@@ -178,6 +178,9 @@ class Vrreplica {
             : viewno(v), client_uid(std::move(cuid)), client_seqno(cseqno),
               request(std::move(req)) {
         }
+        bool is_real() const {
+            return client_uid;
+        }
         bool operator==(const log_item& x) const {
             return viewno == x.viewno && client_uid == x.client_uid
                 && client_seqno == x.client_seqno
@@ -295,6 +298,7 @@ class Vrreplica {
     void process_request(Vrchannel* who, const Json& msg);
     void process_replicate(Vrchannel* who, const Json& msg);
     void process_commit(Vrchannel* who, const Json& msg);
+    void process_commit_log(const Json& msg);
     void update_commitno(lognumber_t commitno);
     Json commit_log_message(lognumber_t from_storeno) const;
     void send_commit_log(Vrview::member_type* peer, lognumber_t first);
