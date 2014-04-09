@@ -115,7 +115,7 @@ Vrview Vrview::make_singular(String peer_uid, Json peer_name) {
     v.members.push_back(member_type(std::move(peer_uid),
                                     std::move(peer_name)));
     v.primary_index = v.my_index = 0;
-    v.account_commit(&v.members.back(), 0);
+    v.account_ack(&v.members.back(), 0);
     return v;
 }
 
@@ -214,7 +214,7 @@ void Vrview::prepare(String uid, const Json& payload, bool is_next) {
             ++nconfirmed;
         }
         if (!payload["ackno"].is_null() && is_next)
-            account_commit(it, payload["ackno"].to_u());
+            account_ack(it, payload["ackno"].to_u());
     }
 }
 
@@ -238,7 +238,7 @@ void Vrview::clear_preparation(bool is_next) {
         it.acked = it.confirmed = false;
     if (is_next)
         for (auto& it : members)
-            it.has_storeno_ = false;
+            it.has_ackno_ = false;
 }
 
 void Vrview::add(String peer_uid, const String& my_uid) {
@@ -264,12 +264,12 @@ void Vrview::advance() {
     primary_index = viewno % members.size();
 }
 
-Json Vrview::commits_json() const {
+Json Vrview::acks_json() const {
     Json j = Json::array();
     for (auto it = members.begin(); it != members.end(); ++it) {
         Json x = Json::array(it->uid);
-        if (it->has_storeno_)
-            x.push_back_list(it->storeno_.value(), it->store_count_);
+        if (it->has_ackno_)
+            x.push_back_list(it->ackno_.value(), it->ackno_count_);
         bool is_primary = it - members.begin() == primary_index;
         bool is_me = it - members.begin() == my_index;
         if (is_primary || is_me)
@@ -279,41 +279,39 @@ Json Vrview::commits_json() const {
     return j;
 }
 
-void Vrview::account_commit(member_type* peer, lognumber_t storeno) {
-    bool has_old_storeno = peer->has_storeno();
-    lognumber_t old_storeno = peer->storeno();
-    assert(!has_old_storeno || old_storeno <= storeno);
-    peer->has_storeno_ = true;
-    peer->storeno_ = storeno;
-    peer->store_count_ = 0;
-    if (!has_old_storeno || old_storeno != storeno)
-        peer->store_changed_at_ = tamer::drecent();
+void Vrview::account_ack(member_type* peer, lognumber_t ackno) {
+    bool has_old_ackno = peer->has_ackno();
+    lognumber_t old_ackno = peer->ackno();
+    assert(!has_old_ackno || old_ackno <= ackno);
+    peer->has_ackno_ = true;
+    peer->ackno_ = ackno;
+    peer->ackno_count_ = 0;
+    if (!has_old_ackno || old_ackno != ackno)
+        peer->ackno_changed_at_ = tamer::drecent();
     for (auto it = members.begin(); it != members.end(); ++it)
-        if (it->has_storeno_) {
-            if (it->storeno_ <= storeno
-                && (!has_old_storeno || it->storeno_ > old_storeno)
+        if (it->has_ackno_) {
+            if (it->ackno_ <= ackno
+                && (!has_old_ackno || it->ackno_ > old_ackno)
                 && &*it != peer)
-                ++it->store_count_;
-            if (storeno <= it->storeno_)
-                ++peer->store_count_;
+                ++it->ackno_count_;
+            if (ackno <= it->ackno_)
+                ++peer->ackno_count_;
         }
 }
 
-bool Vrview::account_all_commits() {
+bool Vrview::account_all_acks() {
     bool changed = false;
-    Json cj = commits_json();
+    //Json cj = acks_json();
     for (auto it = members.begin(); it != members.end(); ++it) {
-        unsigned old_store_count = it->store_count_;
-        it->store_count_ = 0;
+        unsigned old_ackno_count = it->ackno_count_;
+        it->ackno_count_ = 0;
         for (auto jt = members.begin(); jt != members.end(); ++jt)
-            if (it->has_storeno_ && jt->has_storeno_
-                && it->storeno_ <= jt->storeno_)
-                ++it->store_count_;
-        changed = changed || it->store_count_ != old_store_count;
+            if (it->has_ackno_ && jt->has_ackno_
+                && it->ackno_ <= jt->ackno_)
+                ++it->ackno_count_;
+        changed = changed || it->ackno_count_ != old_ackno_count;
     }
-#if 0
-    std::cerr << (changed ? "! " : ". ") << " => " << cj << " => " << commits_json() << "\n";
-#endif
+    //std::cerr << (changed ? "! " : ". ") << " => " << cj << " => " << acks_json() << "\n";
     return changed;
 }
 
@@ -575,7 +573,8 @@ void Vrreplica::process_view(Vrchannel* who, const Json& msg) {
         if (cur_view_.viewno != next_view_.viewno)
             primary_adopt_view_change(who);
         else
-            send_commit_log(cur_view_.find_pointer(who->remote_uid()), commitno());
+            send_commit_log(cur_view_.find_pointer(who->remote_uid()),
+                            commitno(), last_logno());
     } else if (want_send)
         send_view(who);
 }
@@ -623,12 +622,12 @@ void Vrreplica::process_view_check_log(Vrchannel* who, Json& payload) {
 }
 
 void Vrreplica::primary_adopt_view_change(Vrchannel* who) {
-    next_view_.account_all_commits();
+    next_view_.account_all_acks();
     cur_view_ = next_view_;
     process_at_number(cur_view_.viewno, at_view_);
     primary_keepalive_loop();
 
-    // truncate log at gaps
+    // truncate log if there are gaps
     for (lognumber_t l = commitno_; l != last_logno(); ++l)
         if (!log_entry(l).is_real()) {
             log_.resize(l - first_logno_);
@@ -638,7 +637,7 @@ void Vrreplica::primary_adopt_view_change(Vrchannel* who) {
     for (auto it = cur_view_.members.begin();
          it != cur_view_.members.end(); ++it)
         if (it->confirmed)
-            send_commit_log(&*it, it->storeno());
+            send_commit_log(&*it, it->ackno(), last_logno());
 
     log_connection(who) << uid() << " adopts view " << unparse_view_state() << "\n";
 }
@@ -658,9 +657,10 @@ Json Vrreplica::view_payload(const String& peer_uid) {
         payload["confirm"] = true;
     if (next_view_.viewno != cur_view_.viewno
         && !next_view_.me_primary()
-        && next_view_.primary().has_storeno()
+        && next_view_.primary().has_ackno()
         && peer_uid == next_view_.primary().uid) {
-        lognumber_t logno = std::max(first_logno_, next_view_.primary().storeno());
+        lognumber_t logno = std::max(first_logno_,
+                                     next_view_.primary().ackno());
         payload["logno"] = logno.value();
         Json log = Json::array();
         for (; logno < last_logno(); ++logno) {
@@ -673,6 +673,14 @@ Json Vrreplica::view_payload(const String& peer_uid) {
         payload["log"] = std::move(log);
     }
     return payload;
+}
+
+tamed void Vrreplica::send_peer(String peer_uid, Json msg) {
+    tamed { Vrchannel* ep = nullptr; }
+    while (!(ep = endpoints_[peer_uid]))
+        twait { connect(peer_uid, make_event()); }
+    if (ep != me_)
+        ep->send(msg);
 }
 
 void Vrreplica::send_view(Vrchannel* who, Json payload, Json seqno) {
@@ -731,35 +739,49 @@ tamed void Vrreplica::start_view_change() {
 }
 
 void Vrreplica::process_request(Vrchannel* who, const Json& msg) {
-    if (msg.size() < 4 || !msg[2].is_i())
+    if (msg.size() < 4 || !msg[2].is_i()) {
         who->send(Json::array(m_vri_error, msg[1], false));
-    else if (!is_primary() || between_views())
+        return;
+    } else if (!is_primary() || between_views()) {
         send_view(who, Json(), msg[1]);
-    else {
-        lognumber_t from_storeno = last_logno();
-        unsigned seqno = msg[2].to_u64();
-        for (int i = 3; i != msg.size(); ++i, ++seqno)
-            log_.emplace_back(cur_view_.viewno, who->remote_uid(),
-                              seqno, msg[i]);
-        process_at_number(from_storeno, at_store_);
-        broadcast_commit(from_storeno);
-
-        // the new commits are replicated only here
-        cur_view_.account_commit(&cur_view_.primary(), last_logno());
+        return;
     }
+
+    // add request to our log
+    lognumber_t from_storeno = last_logno();
+    unsigned seqno = msg[2].to_u64();
+    for (int i = 3; i != msg.size(); ++i, ++seqno)
+        log_.emplace_back(cur_view_.viewno, who->remote_uid(),
+                          seqno, msg[i]);
+    process_at_number(from_storeno, at_store_);
+
+    // broadcast commit to backups
+    Json commit_msg = commit_log_message(from_storeno, last_logno());
+    for (auto it = cur_view_.members.begin();
+         it != cur_view_.members.end(); ++it)
+        if ((it->has_ackno() && it->ackno() == from_storeno)
+            || tamer::drecent() <=
+                 it->ackno_changed_at() + k_.retransmit_log_timeout)
+            send_peer(it->uid, commit_msg);
+        else
+            send_commit_log(&*it, it->ackno(), last_logno());
+    commit_sent_at_ = tamer::drecent();
+
+    // the new commits are replicated only here
+    cur_view_.account_ack(&cur_view_.primary(), last_logno());
 }
 
-Json Vrreplica::commit_log_message(lognumber_t first) const {
+Json Vrreplica::commit_log_message(lognumber_t first, lognumber_t last) const {
     Json msg = Json::array(m_vri_commit,
                            Json::null,
                            cur_view_.viewno.value(),
                            commitno_.value(),
                            commitno_ - decideno_);
     first = std::max(first, first_logno_);
-    if (first < last_logno()) {
-        msg.reserve(msg.size() + 1 + (last_logno() - first) * 4);
+    if (first < last) {
+        msg.reserve(msg.size() + 1 + (last - first) * 4);
         msg.push_back(first.value());
-        for (lognumber_t i = first; i != last_logno(); ++i) {
+        for (lognumber_t i = first; i != last; ++i) {
             const log_item& li = log_[i - first_logno_];
             msg.push_back_list(cur_view_.viewno - li.viewno,
                                li.client_uid, li.client_seqno, li.request);
@@ -768,32 +790,11 @@ Json Vrreplica::commit_log_message(lognumber_t first) const {
     return msg;
 }
 
-tamed void Vrreplica::send_peer(String peer_uid, Json msg) {
-    tamed { Vrchannel* ep = nullptr; }
-    while (!(ep = endpoints_[peer_uid]))
-        twait { connect(peer_uid, make_event()); }
-    if (ep != me_)
-        ep->send(msg);
-}
-
-void Vrreplica::send_commit_log(Vrview::member_type* peer, lognumber_t first) {
-    if (peer->has_storeno() && peer->storeno() < first)
-        first = peer->storeno();
-    send_peer(peer->uid, commit_log_message(first));
-}
-
-void Vrreplica::broadcast_commit(lognumber_t from_storeno) {
-    assert(is_primary());
-    Json msg = commit_log_message(from_storeno);
-    for (auto it = cur_view_.members.begin();
-         it != cur_view_.members.end(); ++it)
-        if ((it->has_storeno() && it->storeno() == from_storeno)
-            || tamer::drecent() <=
-                 it->store_changed_at() + k_.retransmit_log_timeout)
-            send_peer(it->uid, msg);
-        else
-            send_commit_log(&*it, it->storeno());
-    commit_sent_at_ = tamer::drecent();
+void Vrreplica::send_commit_log(Vrview::member_type* peer,
+                                lognumber_t first, lognumber_t last) {
+    if (peer->has_ackno() && peer->ackno() < first)
+        first = peer->ackno();
+    send_peer(peer->uid, commit_log_message(first, last));
 }
 
 void Vrreplica::process_commit(Vrchannel* who, const Json& msg) {
@@ -854,9 +855,14 @@ void Vrreplica::process_commit(Vrchannel* who, const Json& msg) {
         }
     }
 
-    if (msg.size() > 6 || ackno_ != old_ackno)
-        who->send(Json::array(m_vri_ack, Json::null, cur_view_.viewno.value(),
-                              ackno_.value(), sackno_.value()));
+    if (msg.size() > 6 || ackno_ != old_ackno) {
+        Json ack_msg = Json::array(m_vri_ack,
+                                   Json::null,
+                                   cur_view_.viewno.value(),
+                                   ackno_.value(),
+                                   sackno_ - ackno_);
+        who->send(std::move(ack_msg));
+    }
 
     primary_received_at_ = tamer::drecent();
 }
@@ -890,7 +896,46 @@ void Vrreplica::process_commit_log(const Json& msg) {
     process_at_number(last_logno(), at_store_);
 }
 
-void Vrreplica::update_commitno(lognumber_t commitno) {
+void Vrreplica::process_ack(Vrchannel* who, const Json& msg) {
+    Vrview::member_type* peer;
+    if (msg.size() < 4
+        || !msg[2].is_u()
+        || !msg[3].is_u()) {
+        who->send(Json::array(m_vri_error, msg[1], false));
+        return;
+    } else if (msg[2].to_u() != cur_view_.viewno
+               || between_views()
+               || !(peer = cur_view_.find_pointer(who->remote_uid()))) {
+        send_view(who);
+        return;
+    }
+
+    // process acknowledgement
+    lognumber_t ackno = msg[3].to_u();
+    cur_view_.account_ack(peer, ackno);
+    assert(!cur_view_.account_all_acks());
+
+    // update commitno and decideno
+    if (peer->ackno_count() > cur_view_.f()
+        && ackno > commitno_)
+        process_ack_update_commitno(ackno);
+    if (peer->ackno_count() == cur_view_.size()
+        && ackno > decideno_)
+        decideno_ = ackno;
+    while (first_logno_ < decideno_) {
+        log_.pop_front();
+        ++first_logno_;
+    }
+
+    // primary doesn't really have an ackno, but update for check()'s sake
+    ackno_ = sackno_ = last_logno();
+
+    // if sack, respond with gap
+    if (msg.size() > 4 && msg[4].to_u())
+        send_commit_log(peer, ackno, ackno + msg[4].to_u());
+}
+
+void Vrreplica::process_ack_update_commitno(lognumber_t commitno) {
     std::unordered_map<String, Json> messages;
     for (size_t i = commitno_.value(); i != commitno.value(); ++i) {
         log_item& li = log_[i - first_logno_.value()];
@@ -910,38 +955,6 @@ void Vrreplica::update_commitno(lognumber_t commitno) {
     }
 }
 
-void Vrreplica::process_ack(Vrchannel* who, const Json& msg) {
-    if (msg.size() < 4
-        || !msg[2].is_u()
-        || !msg[3].is_u()) {
-        who->send(Json::array(m_vri_error, msg[1], false));
-        return;
-    }
-
-    viewnumber_t view(msg[2].to_u());
-    Vrview::member_type* peer = cur_view_.find_pointer(who->remote_uid());
-    if (view != cur_view_.viewno || between_views() || !peer) {
-        send_view(who);
-        return;
-    }
-
-    lognumber_t commitno = msg[3].to_u();
-    cur_view_.account_commit(peer, commitno);
-    assert(!cur_view_.account_all_commits());
-    if (peer->store_count() > cur_view_.f()
-        && commitno > commitno_)
-        update_commitno(commitno);
-    if (peer->store_count() == cur_view_.size()
-        && commitno > decideno_)
-        decideno_ = commitno;
-    while (first_logno_ < decideno_) {
-        log_.pop_front();
-        ++first_logno_;
-    }
-    // primary doesn't really have an ackno, but update for check()'s sake
-    ackno_ = sackno_ = last_logno();
-}
-
 tamed void Vrreplica::primary_keepalive_loop() {
     tamed { viewnumber_t view = cur_view_.viewno; }
     while (1) {
@@ -954,7 +967,7 @@ tamed void Vrreplica::primary_keepalive_loop() {
             && !stopped_) {
             for (auto it = cur_view_.members.begin();
                  it != cur_view_.members.end(); ++it)
-                send_commit_log(&*it, it->storeno());
+                send_commit_log(&*it, it->ackno(), last_logno());
             commit_sent_at_ = tamer::drecent();
         }
     }
@@ -1407,7 +1420,7 @@ void Vrtestcollection::print_lognos() const {
         std::cerr << ":";
         if (r->last_logno() != r->commitno())
             std::cerr << r->last_logno();
-        std::cerr << "(" << r->current_view().commits_json() << ")";
+        std::cerr << "(" << r->current_view().acks_json() << ")";
         sep = ", ";
     }
     std::cerr << "\n";

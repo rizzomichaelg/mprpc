@@ -97,23 +97,23 @@ struct Vrview {
         explicit member_type(String peer_uid, Json peer_name)
             : uid(std::move(peer_uid)), peer_name(std::move(peer_name)),
               acked(false), confirmed(false),
-              has_storeno_(false), store_count_(0) {
+              has_ackno_(false), ackno_count_(0) {
             assert(!this->peer_name["uid"] || this->peer_name["uid"] == uid);
             this->peer_name["uid"] = this->uid;
         }
 
-        bool has_storeno() const {
-            return has_storeno_;
+        bool has_ackno() const {
+            return has_ackno_;
         }
-        lognumber_t storeno() const {
-            return storeno_;
+        lognumber_t ackno() const {
+            return ackno_;
         }
-        unsigned store_count() const {
-            assert(has_storeno());
-            return store_count_;
+        unsigned ackno_count() const {
+            assert(has_ackno());
+            return ackno_count_;
         }
-        double store_changed_at() const {
-            return store_changed_at_;
+        double ackno_changed_at() const {
+            return ackno_changed_at_;
         }
 
         bool has_matching_logno() const {
@@ -125,12 +125,12 @@ struct Vrview {
         }
 
       private:
-        bool has_storeno_;
+        bool has_ackno_;
         bool has_matching_logno_;
-        lognumber_t storeno_;
+        lognumber_t ackno_;
         lognumber_t matching_logno_;
-        unsigned store_count_;
-        double store_changed_at_;
+        unsigned ackno_count_;
+        double ackno_changed_at_;
 
         friend class Vrview;
     };
@@ -165,7 +165,7 @@ struct Vrview {
     inline member_type* find_pointer(const String& uid);
 
     Json members_json() const;
-    Json commits_json() const;
+    Json acks_json() const;
 
     bool assign(Json msg, const String& my_uid);
     void add(String uid, const String& my_uid);
@@ -180,8 +180,8 @@ struct Vrview {
     void set_matching_logno(String uid, lognumber_t logno);
     void reduce_matching_logno(lognumber_t logno);
 
-    void account_commit(member_type* peer, lognumber_t commitno);
-    bool account_all_commits();
+    void account_ack(member_type* peer, lognumber_t ackno);
+    bool account_all_acks();
 };
 
 
@@ -314,27 +314,30 @@ class Vrreplica {
 
     String unparse_view_state() const;
 
+    tamed void send_peer(String peer_uid, Json msg);
+
     Json view_payload(const String& peer_uid);
     void send_view(Vrchannel* who, Json payload = Json(), Json seqno = Json());
     tamed void send_view(String peer_uid);
+    void broadcast_view();
+
     void initialize_next_view();
     tamed void start_view_change();
     void primary_adopt_view_change(Vrchannel* who);
-    void broadcast_view();
+
     void process_join(Vrchannel* who, const Json& msg);
     void process_view(Vrchannel* who, const Json& msg);
     void process_view_transfer_log(Vrchannel* who, Json& payload);
     void process_view_check_log(Vrchannel* who, Json& payload);
     void process_request(Vrchannel* who, const Json& msg);
-    void process_replicate(Vrchannel* who, const Json& msg);
     void process_commit(Vrchannel* who, const Json& msg);
     void process_commit_log(const Json& msg);
-    void update_commitno(lognumber_t commitno);
-    Json commit_log_message(lognumber_t from_storeno) const;
-    void send_commit_log(Vrview::member_type* peer, lognumber_t first);
-    tamed void send_peer(String peer_uid, Json msg);
-    void broadcast_commit(lognumber_t from_storeno);
+    Json commit_log_message(lognumber_t first, lognumber_t last) const;
+    void send_commit_log(Vrview::member_type* peer,
+                         lognumber_t first, lognumber_t last);
     void process_ack(Vrchannel* who, const Json& msg);
+    void process_ack_update_commitno(lognumber_t commitno);
+
     template <typename T> void process_at_number(T number, std::deque<std::pair<T, tamer::event<> > >& list);
 
     tamed void listen_loop();
