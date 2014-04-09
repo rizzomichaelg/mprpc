@@ -890,7 +890,7 @@ void Vrreplica::process_commit_log(const Json& msg) {
             if (logno == log_.last())
                 log_.push_back(std::move(li));
             else if (!log_[logno].is_real()
-                     || log_[logno].viewno < cur_view_.viewno)
+                     || log_[logno].viewno < li.viewno)
                 log_[logno] = std::move(li);
         }
 
