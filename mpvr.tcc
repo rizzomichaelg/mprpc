@@ -645,8 +645,11 @@ void Vrreplica::primary_adopt_view_change(Vrchannel* who) {
 Json Vrreplica::view_payload(const String& peer_uid) {
     Json payload = Json::object("viewno", next_view_.viewno.value(),
                                 "members", next_view_.members_json(),
-                                "primary", next_view_.primary_index,
-                                "ackno", std::min(ackno_, commitno_).value());
+                                "primary", next_view_.primary_index);
+    if (next_view_.me_primary())
+        payload.set("ackno", ackno_.value());
+    else
+        payload.set("ackno", std::min(ackno_, commitno_).value());
     auto it = next_view_.members.begin();
     while (it != next_view_.members.end() && it->uid != peer_uid)
         ++it;
