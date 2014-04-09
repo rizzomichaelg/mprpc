@@ -3,6 +3,7 @@
 #define MPVR_THH 1
 #include "string.hh"
 #include "circular_int.hh"
+#include "logger.hh"
 #include <unordered_map>
 #include <random>
 #include <iostream>
@@ -358,33 +359,29 @@ inline void Vrclient::request(Json req, event<> done) {
     request(std::move(req), tamer::rebind<Json>(done));
 }
 
-std::ostream& operator<<(std::ostream& out, const timeval& tv);
 
-inline std::ostream& log_connection(const Vrchannel* ep, const char* ctype) {
-    if (log_frequency == 0 || log_position == log_frequency) {
-        std::cerr << tamer::recent() << ":" << ep->local_uid()
-                  << ctype << ep->remote_uid();
-        if (ep->connection_uid())
-            std::cerr << " (" << ep->connection_uid() << ")";
-        std::cerr << ": ";
-        log_position = 0;
-        return std::cerr;
-    } else {
-        ++log_position;
-        return *null_ostream;
-    }
+inline Logger& log_connection(const String& local_uid,
+                              const String& remote_uid,
+                              const char* ctype = " <-> ") {
+    return logger() << tamer::recent() << ":"
+                    << local_uid << ctype << remote_uid << ": ";
 }
 
-inline std::ostream& log_send(const Vrchannel* ep) {
+inline Logger& log_connection(const Vrchannel* ep,
+                              const char* ctype = " <-> ") {
+    logger() << tamer::recent() << ":"
+             << ep->local_uid() << ctype << ep->remote_uid();
+    if (ep->connection_uid())
+        logger << " (" << ep->connection_uid() << ")";
+    return logger << ": ";
+}
+
+inline Logger& log_send(const Vrchannel* ep) {
     return log_connection(ep, " -> ");
 }
 
-inline std::ostream& log_receive(const Vrchannel* ep) {
+inline Logger& log_receive(const Vrchannel* ep) {
     return log_connection(ep, " <- ");
-}
-
-inline std::ostream& log_connection(const Vrchannel* ep) {
-    return log_connection(ep, " <-> ");
 }
 
 #endif

@@ -27,16 +27,9 @@ static const String m_vri_view("view");
     // view_object
 static const String m_vri_error("error");
 
-Vrconstants vrconstants;
-std::ostream* null_ostream;
-unsigned log_frequency = 0, log_position = 0;
+Logger logger(std::cout);
 
-std::ostream& operator<<(std::ostream& out, const timeval& tv) {
-    char buf[40];
-    int x = sprintf(buf, "%ld.%06ld", (long) tv.tv_sec, (long) tv.tv_usec);
-    out.write(buf, x);
-    return out;
-}
+Vrconstants vrconstants;
 
 String random_string(std::mt19937& rg) {
     uint64_t x = std::uniform_int_distribution<uint64_t>()(rg);
@@ -403,8 +396,7 @@ tamed void Vrreplica::connect(String peer_uid, event<> done) {
         return;
     }
 
-    std::cerr << tamer::recent() << ":" << uid() << " <-> " << peer_uid
-              << ": connecting\n";
+    log_connection(uid(), peer_uid) << "connecting\n";
     if (!(peer_name = node_names_[peer_uid]))
         peer_name = Json::object("uid", peer_uid);
     twait { me_->connect(peer_uid, peer_name, make_event(peer)); }
@@ -687,8 +679,8 @@ tamed void Vrreplica::start_view_change() {
     twait { tamer::at_delay(k_.view_change_timeout * (1 + rand01() / 8),
                             make_event()); }
     if (cur_view_.viewno < view) {
-        std::cerr << tamer::recent() << ":" << uid() << ": timing out view "
-                  << unparse_view_state() << "\n";
+        logger() << tamer::recent() << ":" << uid() << ": timing out view "
+                 << unparse_view_state() << "\n";
         next_view_.advance();
         start_view_change();
     }
@@ -1565,9 +1557,6 @@ static Clp_Option options[] = {
 };
 
 int main(int argc, char** argv) {
-    null_ostream = new std::ofstream("/dev/null");
-    null_ostream->setstate(std::ios_base::badbit);
-
     Clp_Parser* clp = Clp_NewParser(argc, argv, sizeof(options)/sizeof(options[0]), options);
     unsigned n = 0;
     unsigned seed = std::mt19937::default_seed;
@@ -1585,7 +1574,7 @@ int main(int argc, char** argv) {
             assert(clp->val.d >= 0 && clp->val.d <= 1);
             loss_p = clp->val.d;
         } else if (Clp_IsLong(clp, "quiet"))
-            log_frequency = clp->negated ? 0 : 2000;
+            logger.set_frequency(clp->negated ? 0 : 2000);
     }
     n = n ? n : 5;
 
