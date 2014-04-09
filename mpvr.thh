@@ -97,7 +97,7 @@ struct Vrview {
         explicit member_type(String peer_uid, Json peer_name)
             : uid(std::move(peer_uid)), peer_name(std::move(peer_name)),
               acked(false), confirmed(false),
-              has_ackno_(false), ackno_count_(0) {
+              has_ackno_(false), has_matching_logno_(false), ackno_count_(0) {
             assert(!this->peer_name["uid"] || this->peer_name["uid"] == uid);
             this->peer_name["uid"] = this->uid;
         }
