@@ -46,6 +46,13 @@ String Vrchannel::make_client_uid() {
     return String("c") + String(counter++);
 }
 
+std::ostream& operator<<(std::ostream& str, const Vrreplica::log_item& li) {
+    if (li.is_real())
+        return str << li.request << "@" << li.viewno;
+    else
+        return str << "~empty~";
+}
+
 
 // Handshake protocol (clients + interconnect)
 
@@ -1438,10 +1445,8 @@ void Vrtestcollection::print_log_position(lognumber_t l) const {
             std::cerr << sep << r->uid() << ":";
             if (l < r->first_logno())
                 std::cerr << "trunc";
-            else {
-                const Vrreplica::log_item& li = r->log_entry(l);
-                std::cerr << li.request << "@v#" << li.viewno;
-            }
+            else
+                std::cerr << r->log_entry(l);
             sep = ", ";
         }
     std::cerr << ">\n";
@@ -1532,7 +1537,8 @@ void Vrtestcollection::check() {
             const Vrreplica::log_item& cli = committed_log_[first - first_logno_];
             if (li.is_real()) {
                 assert(cli.viewno != li.viewno || cli == li);
-                if (first < first_logno + commit_counts.size() && cli.viewno == li.viewno)
+                if (first < first_logno + commit_counts.size()
+                    && cli.viewno == li.viewno)
                     ++commit_counts[first - first_logno];
             }
         }
@@ -1546,7 +1552,7 @@ void Vrtestcollection::check() {
         while (missingpos != size() && last_lognos[missingpos] <= l)
             ++missingpos;
         if (commit_counts[l - first_logno] != truncatepos - missingpos) {
-            std::cerr << "check: decided l#" << l << "<" << committed_log_[l - first_logno_].request << "> replicated only " << commit_counts[l - first_logno] << " times (want " << (truncatepos - missingpos) << ")\n";
+            std::cerr << "check: decided l#" << l << "<" << committed_log_[l - first_logno_] << "> replicated only " << commit_counts[l - first_logno] << " times (want " << (truncatepos - missingpos) << ")\n";
             print_lognos();
             print_log_position(l);
         }
@@ -1555,7 +1561,7 @@ void Vrtestcollection::check() {
     // Every "committed" log element has >= f + 1 commits
     for (lognumber_t l = max_decideno; l != max_commitno; ++l) {
         if (commit_counts[l - first_logno] < f + 1) {
-            std::cerr << "check: committed l#" << l << "<" << committed_log_[l - first_logno_].request << "> replicated only " << commit_counts[l - first_logno] << " times\n";
+            std::cerr << "check: committed l#" << l << "<" << committed_log_[l - first_logno_] << "> replicated only " << commit_counts[l - first_logno] << " times\n";
             print_lognos();
             print_log_position(l);
         }
