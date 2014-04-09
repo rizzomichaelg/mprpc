@@ -785,20 +785,25 @@ void Vrreplica::process_commit(Vrchannel* who, const Json& msg) {
         return;
     }
 
+    lognumber_t commitno = msg[3].to_u();
+    lognumber_t decideno = commitno - msg[4].to_u();
+    // decideno indicates that all replicas, including us, agree. Use it to
+    // advance commitno_. (Retransmitted commits won't work before decideno,
+    // because others may have truncated their logs.)
+    // NB might have decideno < first_logno() near view changes!
+    assert(decideno <= last_logno());
+    commitno_ = std::max(commitno_, decideno);
+
     if (msg.size() > 6)
         process_commit_log(msg);
 
-    who->send(Json::array(m_vri_ack, Json::null, cur_view_.viewno.value(),
-                          commitno_sticky_ ? commitno_.value() : last_logno().value()));
-
-    lognumber_t commitno = msg[3].to_u();
     if (commitno > commitno_
         && commitno <= last_logno()
         && !commitno_sticky_) {
         commitno_ = commitno;
         process_at_number(commitno_, at_commit_);
     }
-    lognumber_t decideno = commitno - msg[4].to_u();
+
     if (decideno > decideno_ && decideno <= commitno_) {
         decideno_ = decideno;
         while (first_logno_ < decideno_) {
@@ -806,6 +811,10 @@ void Vrreplica::process_commit(Vrchannel* who, const Json& msg) {
             ++first_logno_;
         }
     }
+
+    who->send(Json::array(m_vri_ack, Json::null, cur_view_.viewno.value(),
+                          commitno_sticky_ ? commitno_.value() : last_logno().value()));
+
     primary_received_at_ = tamer::drecent();
 }
 
