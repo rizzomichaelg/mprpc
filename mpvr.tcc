@@ -1547,7 +1547,7 @@ void Vrtestcollection::check() {
         assert(commit_counts[l] == truncatepos - missingpos);
     }
     // Every "committed" log element has >= f + 1 commits
-    for (lognumber_t l = max_decideno; l != max_commitno; ++l) {
+    for (lognumber_t l = max_decideno; l != commitno_; ++l) {
         if (commit_counts[l] < f + 1) {
             std::cerr << "check: committed l#" << l << "<" << committed_log_[l] << "> replicated only " << commit_counts[l] << " times\n";
             print_lognos();
