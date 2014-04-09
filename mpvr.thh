@@ -151,6 +151,9 @@ struct Vrview {
     inline unsigned f() const {
         return size() / 2;
     }
+    inline String uid() const {
+        return members[my_index].uid;
+    }
     inline bool me_primary() const {
         return primary_index == my_index;
     }
@@ -235,15 +238,22 @@ class Vrreplica {
     inline lognumber_t first_logno() const {
         return first_logno_;
     }
-    inline lognumber_t last_logno() const {
-        return first_logno_ + log_.size();
+    inline lognumber_t decideno() const {
+        return decideno_;
     }
     inline lognumber_t commitno() const {
         return commitno_;
     }
-    inline lognumber_t decideno() const {
-        return decideno_;
+    inline lognumber_t ackno() const {
+        return ackno_;
     }
+    inline lognumber_t sackno() const {
+        return sackno_;
+    }
+    inline lognumber_t last_logno() const {
+        return first_logno_ + log_.size();
+    }
+
     inline const log_item& log_entry(lognumber_t logno) const {
         size_t delta = logno - first_logno_;
         assert(delta < log_.size());
@@ -266,12 +276,13 @@ class Vrreplica {
     mutable std::unordered_map<String, Json> node_names_;
 
     lognumber_t first_logno_;
-    lognumber_t commitno_;
     lognumber_t decideno_;
+    lognumber_t commitno_;
+    lognumber_t ackno_;
+    lognumber_t sackno_;
     std::deque<log_item> log_;
 
     bool next_view_sent_confirm_;
-    bool commitno_sticky_;
 
     bool stopped_;
 
@@ -308,6 +319,7 @@ class Vrreplica {
     tamed void send_view(String peer_uid);
     void initialize_next_view();
     tamed void start_view_change();
+    void primary_adopt_view_change(Vrchannel* who);
     void broadcast_view();
     void process_join(Vrchannel* who, const Json& msg);
     void process_view(Vrchannel* who, const Json& msg);
