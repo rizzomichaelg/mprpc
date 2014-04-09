@@ -238,7 +238,7 @@ void Vrview::clear_preparation(bool is_next) {
         it.acked = it.confirmed = false;
     if (is_next)
         for (auto& it : members)
-            it.has_ackno_ = false;
+            it.has_ackno_ = it.has_matching_logno_ = false;
 }
 
 void Vrview::add(String peer_uid, const String& my_uid) {
@@ -762,7 +762,8 @@ void Vrreplica::process_request(Vrchannel* who, const Json& msg) {
     Json commit_msg = commit_log_message(from_storeno, last_logno());
     for (auto it = cur_view_.members.begin();
          it != cur_view_.members.end(); ++it)
-        if ((it->has_ackno() && it->ackno() == from_storeno)
+        if (!it->has_ackno()
+            || it->ackno() == from_storeno
             || tamer::drecent() <=
                  it->ackno_changed_at() + k_.retransmit_log_timeout)
             send_peer(it->uid, commit_msg);
