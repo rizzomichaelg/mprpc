@@ -15,8 +15,8 @@ static const String m_vri_request("req");
 static const String m_vri_response("res");
     // [seqno, reply]*
 static const String m_vri_commit("commit");
-    // P->R: [3, xxx, viewno, commitno, nundecided,
-    //        [logno, [client_uid, client_seqno, request]*]]
+    // P->R: [3, xxx, viewno, commitno, decide_delta,
+    //        [logno, [view_delta, client_uid, client_seqno, request]*]]
 static const String m_vri_ack("ack");
     // R->P: [3, xxx, viewno, storeno]
 static const String m_vri_handshake("handshake");
@@ -114,10 +114,8 @@ Vrview Vrview::make_singular(String peer_uid, Json peer_name) {
     Vrview v;
     v.members.push_back(member_type(std::move(peer_uid),
                                     std::move(peer_name)));
-    v.members[0].has_storeno_ = true;
-    v.members[0].storeno_ = 0;
-    v.members[0].store_count_ = 1;
     v.primary_index = v.my_index = 0;
+    v.account_commit(&v.members.back(), 0);
     return v;
 }
 
@@ -206,10 +204,7 @@ bool Vrview::shared_quorum(const Vrview& x) const {
 }
 
 void Vrview::prepare(String uid, const Json& payload, bool is_next) {
-    auto it = members.begin();
-    while (it != members.end() && it->uid != uid)
-        ++it;
-    if (it != members.end()) {
+    if (auto it = find_pointer(uid)) {
         if (!it->acked) {
             it->acked = true;
             ++nacked;
@@ -219,8 +214,22 @@ void Vrview::prepare(String uid, const Json& payload, bool is_next) {
             ++nconfirmed;
         }
         if (!payload["commitno"].is_null() && is_next)
-            account_commit(it.operator->(), payload["commitno"].to_u());
+            account_commit(it, payload["commitno"].to_u());
     }
+}
+
+void Vrview::set_matching_logno(String uid, lognumber_t logno) {
+    if (auto it = find_pointer(uid)) {
+        it->has_matching_logno_ = true;
+        it->matching_logno_ = logno;
+    }
+}
+
+void Vrview::reduce_matching_logno(lognumber_t logno) {
+    for (auto it = members.begin(); it != members.end(); ++it)
+        if (it->has_matching_logno_
+            && logno < it->matching_logno_)
+            it->matching_logno_ = logno;
 }
 
 void Vrview::clear_preparation(bool is_next) {
@@ -532,9 +541,12 @@ void Vrreplica::process_view(Vrchannel* who, const Json& msg) {
         cur_view_.prepare(who->remote_uid(), payload, false);
         next_view_.prepare(who->remote_uid(), payload, true);
         if (payload["log"]
-            && next_view_.me_primary()
-            && cur_view_.viewno != next_view_.viewno)
-            process_view_log_transfer(payload);
+            && next_view_.me_primary()) {
+            if (cur_view_.viewno != next_view_.viewno)
+                process_view_transfer_log(who, payload);
+            else
+                process_view_check_log(who, payload);
+        }
         want_send = !payload["ack"] && !payload["confirm"]
             && (cur_view_.viewno != next_view_.viewno || is_primary());
     } else {
@@ -578,25 +590,45 @@ void Vrreplica::process_view(Vrchannel* who, const Json& msg) {
         send_view(who);
 }
 
-void Vrreplica::process_view_log_transfer(Json& payload) {
+void Vrreplica::process_view_transfer_log(Vrchannel* who, Json& payload) {
     assert(payload["logno"].is_u()
            && payload["log"].is_a()
            && payload["log"].size() % 4 == 0);
     lognumber_t logno = payload["logno"].to_u();
+    assert(logno <= last_logno());
     const Json& log = payload["log"];
+    lognumber_t matching_logno = logno + log.size();
     for (int i = 0; i != log.size(); i += 4, ++logno)
         if (logno >= first_logno_) {
             log_item li(log[i].to_u(), log[i+1].to_s(), log[i+2].to_u(), log[i+3]);
             auto it = log_.begin() + (logno - first_logno_);
             if (it == log_.end())
                 log_.push_back(std::move(li));
-            else if (it->viewno < li.viewno)
+            else if (it->viewno < li.viewno) {
                 *it = std::move(li);
-            else if (it->viewno == li.viewno)
+                next_view_.reduce_matching_logno(logno);
+            } else if (it->viewno == li.viewno)
                 assert(it->client_uid == li.client_uid
                        && it->client_seqno == li.client_seqno);
+            else /* log diverged */
+                matching_logno = std::min(logno, matching_logno);
         }
+    next_view_.set_matching_logno(who->remote_uid(), matching_logno);
     process_at_number(first_logno_ + log.size(), at_store_);
+}
+
+void Vrreplica::process_view_check_log(Vrchannel* who, Json& payload) {
+    assert(payload["logno"].is_u()
+           && payload["log"].is_a()
+           && payload["log"].size() % 4 == 0);
+    lognumber_t logno = payload["logno"].to_u();
+    assert(logno <= last_logno());
+    const Json& log = payload["log"];
+    for (int i = 0; i != log.size() && logno < last_logno(); i += 4, ++logno)
+        if (logno >= first_logno_
+            && log[i].to_u() != log_entry(logno).viewno)
+            break;
+    next_view_.set_matching_logno(who->remote_uid(), logno);
 }
 
 Json Vrreplica::view_payload(const String& peer_uid) {

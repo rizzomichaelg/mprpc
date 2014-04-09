@@ -116,9 +116,19 @@ struct Vrview {
             return store_changed_at_;
         }
 
+        bool has_matching_logno() const {
+            return has_matching_logno_;
+        }
+        lognumber_t matching_logno() const {
+            assert(has_matching_logno());
+            return matching_logno_;
+        }
+
       private:
         bool has_storeno_;
+        bool has_matching_logno_;
         lognumber_t storeno_;
+        lognumber_t matching_logno_;
         unsigned store_count_;
         double store_changed_at_;
 
@@ -150,17 +160,23 @@ struct Vrview {
 
     inline int count(const String& uid) const;
     inline member_type* find_pointer(const String& uid);
+
     Json members_json() const;
     Json commits_json() const;
+
     bool assign(Json msg, const String& my_uid);
-    //inline Json operator[](const String& uid) const;
+    void add(String uid, const String& my_uid);
+    void advance();
+
     bool operator==(const Vrview& x) const;
     bool operator!=(const Vrview& x) const { return !(*this == x); }
     bool shared_quorum(const Vrview& x) const;
-    void prepare(String uid, const Json& payload, bool is_next);
+
     void clear_preparation(bool is_next);
-    void add(String uid, const String& my_uid);
-    void advance();
+    void prepare(String uid, const Json& payload, bool is_next);
+    void set_matching_logno(String uid, lognumber_t logno);
+    void reduce_matching_logno(lognumber_t logno);
+
     void account_commit(member_type* peer, lognumber_t commitno);
     bool account_all_commits();
 };
@@ -295,7 +311,8 @@ class Vrreplica {
     void broadcast_view();
     void process_join(Vrchannel* who, const Json& msg);
     void process_view(Vrchannel* who, const Json& msg);
-    void process_view_log_transfer(Json& payload);
+    void process_view_transfer_log(Vrchannel* who, Json& payload);
+    void process_view_check_log(Vrchannel* who, Json& payload);
     void process_request(Vrchannel* who, const Json& msg);
     void process_replicate(Vrchannel* who, const Json& msg);
     void process_commit(Vrchannel* who, const Json& msg);
