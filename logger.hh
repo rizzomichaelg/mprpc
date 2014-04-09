@@ -9,6 +9,7 @@ class Logger {
     inline Logger& operator()();
     inline Logger& operator()(bool active);
     inline bool active() const;
+    inline unsigned frequency() const;
     inline void set_frequency(unsigned frequency);
   private:
     std::ostream& stream_;
@@ -44,6 +45,10 @@ inline Logger& Logger::operator()(bool active) {
 
 inline bool Logger::active() const {
     return active_;
+}
+
+inline unsigned Logger::frequency() const {
+    return frequency_;
 }
 
 inline void Logger::set_frequency(unsigned frequency) {

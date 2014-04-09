@@ -1643,8 +1643,12 @@ int main(int argc, char** argv) {
         } else if (Clp_IsLong(clp, "loss")) {
             assert(clp->val.d >= 0 && clp->val.d <= 1);
             loss_p = clp->val.d;
-        } else if (Clp_IsLong(clp, "quiet"))
-            logger.set_frequency(clp->negated ? 0 : 2000);
+        } else if (Clp_IsLong(clp, "quiet")) {
+            if (clp->negated)
+                logger.set_frequency(0);
+            else
+                logger.set_frequency(std::max(logger.frequency(), 1000U) * 2);
+        }
     }
     n = n ? n : 5;
 
